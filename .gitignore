@@ -23,7 +23,6 @@ out/
 /build
 
 # Compiled JavaScript files
-*.js
 !jest.config.js
 *.d.ts
 

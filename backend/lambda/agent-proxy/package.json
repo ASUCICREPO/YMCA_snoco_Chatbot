@@ -1,0 +1,13 @@
+{
+  "name": "ymca-agent-proxy",
+  "version": "1.0.0",
+  "description": "YMCA AI Agent Proxy Lambda Function",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agent-runtime": "^3.0.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.0.0",
+    "@aws-sdk/client-translate": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
+  }
+}

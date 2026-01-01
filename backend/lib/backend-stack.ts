@@ -133,25 +133,7 @@ export class YmcaAiStack extends cdk.Stack {
       functionName: 'ymca-agent-proxy',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromInline(`
-        exports.handler = async (event) => {
-          console.log('Agent Proxy Lambda - Event:', JSON.stringify(event, null, 2));
-          return {
-            statusCode: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*',
-              'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-              'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
-            },
-            body: JSON.stringify({
-              message: 'YMCA AI Agent Proxy - Not yet implemented',
-              timestamp: new Date().toISOString(),
-              knowledgeBaseReady: process.env.KNOWLEDGE_BASE_ID ? true : false
-            })
-          };
-        };
-      `),
+      code: lambda.Code.fromAsset('lambda/agent-proxy'),
       role: lambdaExecutionRole,
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
@@ -159,7 +141,8 @@ export class YmcaAiStack extends cdk.Stack {
         CONVERSATION_TABLE_NAME: conversationTable.tableName,
         ANALYTICS_TABLE_NAME: analyticsTable.tableName,
         DOCUMENTS_BUCKET: documentsBucket.bucketName,
-        // KNOWLEDGE_BASE_ID: 'Set this after creating Knowledge Base in Bedrock console'
+        KNOWLEDGE_BASE_ID: 'VK00OSVVTL', // Set the actual Knowledge Base ID
+        REGION: this.region,
       },
     });
 
