@@ -36,11 +36,12 @@ Key components include document ingestion via S3, automated processing through S
 ![Architecture Diagram](./docs/media/ymca_architecture.png)
 
 **Architecture Flow:**
-1. **Document Upload** → Users upload historical documents via the web interface
+1. **Document Upload** → Users upload historical documents via the web interface to S3 `input/` folder
 2. **Document Processing** → Step Functions orchestrates OCR extraction via Textract
-3. **Knowledge Extraction** → Processed text is stored in Bedrock Knowledge Base
-4. **Multilingual Chat** → Users interact with the AI agent through Amazon Translate
-5. **Response Generation** → RAG system provides contextual answers from processed documents
+3. **Text Storage** → Processed text is saved to S3 `output/` folder in structured JSON format
+4. **Knowledge Base** → Bedrock Knowledge Base reads from `output/` folder and creates embeddings using managed S3 Vectors
+5. **Multilingual Chat** → Users interact with the AI agent through Amazon Translate
+6. **Response Generation** → RAG system provides contextual answers from processed documents
 
 For a detailed explanation of the architecture, see the [Architecture Deep Dive](./docs/architectureDeepDive.md).
 
@@ -50,10 +51,85 @@ For a detailed explanation of the architecture, see the [Architecture Deep Dive]
 
 For complete deployment instructions, see the [Deployment Guide](./docs/deploymentGuide.md).
 
-**Quick Start:**
-1. **Prerequisites**: Install Node.js 18+, AWS CLI, and AWS CDK CLI (`npm install -g aws-cdk`)
-2. **Setup**: Clone repository, run `npm install` in both backend/ and frontend/ directories
-3. **Deploy**: Configure AWS credentials, run `npm run bootstrap` then `npm run deploy` in backend/
+**One-Command Deployment (CloudShell Ready):**
+```bash
+# Clone and deploy everything in one go
+git clone <repository-url>
+cd YMCA_AI_Chatbot/backend
+./scripts/deploy.sh --auto
+```
+
+**What the deployment script does:**
+1. ✅ **CDK Infrastructure**: Deploys Step Functions, Lambda, S3, DynamoDB, API Gateway
+2. ✅ **Document Processing**: Textract pipeline saves processed text to S3 `output/` folder
+3. ✅ **Bedrock Ready**: Infrastructure ready for Knowledge Base creation (post-deployment)
+4. ✅ **Cost Optimization**: Uses Bedrock's managed S3 Vectors (no separate vector storage costs)
+
+**Deployment Options:**
+```bash
+# Interactive deployment (default) - automated infrastructure setup
+./scripts/deploy.sh
+
+# Auto-deploy everything without prompts
+./scripts/deploy.sh --auto
+
+# Help
+./scripts/deploy.sh --help
+```
+
+**Prerequisites:**
+- AWS CLI configured (`aws configure`)
+- Node.js 18+ installed
+- CDK CLI installed (`npm install -g aws-cdk`)
+
+**CloudShell Ready:** The script works perfectly in AWS CloudShell with no additional setup required!
+
+---
+
+## Post-Deployment Setup: Bedrock Knowledge Base
+
+After deploying the infrastructure, you need to create the Bedrock Knowledge Base to enable AI-powered document search and chat functionality.
+
+### Step 1: Create Knowledge Base
+
+**💡 Pro Tip**: Keep the deployment outputs handy as you'll need the vector store bucket name multiple times during setup.
+
+1. **Navigate to Bedrock Knowledge Bases**:
+   - Open the AWS Console
+   - Search for "Bedrock" and select "Amazon Bedrock"
+   - On the left sidebar, click on "Knowledge bases"
+
+2. **Create New Knowledge Base**:
+   - Click "Create knowledge base"
+   - Select "Knowledge base with vector store"
+   - Enter your knowledge base name (e.g., "ymca-ai-knowledge-base")
+   - Set data source type to "S3"
+   - Click "Next"
+
+3. **Configure S3 Data Source**:
+   - Browse S3 buckets and find your documents bucket
+   - **Use the DocumentsBucketName from your deployment outputs**
+   - Select the `ymca-documents-[account]-[region]` bucket
+   - Set the prefix to `output/` (where processed documents are stored)
+   - Click "Next"
+
+4. **Configure Embeddings Model**:
+   - Select embeddings model: "Titan Text Embeddings V2"
+   - Choose "Quick create a new vector store"
+   - Click "S3 Vectors"
+   - Click "Next"
+   - Click "Create knowledge base"
+
+### Step 2: Update Lambda Configuration
+
+After creating the Knowledge Base, update your agent-proxy Lambda function with the Knowledge Base ID:
+
+1. Navigate to AWS Lambda console
+2. Find the `ymca-agent-proxy` function
+3. Add environment variable: `KNOWLEDGE_BASE_ID` with your Knowledge Base ID
+4. Save the configuration
+
+**Note**: The Knowledge Base will automatically sync with documents processed through the Textract pipeline and stored in the vector store bucket.
 
 ---
 

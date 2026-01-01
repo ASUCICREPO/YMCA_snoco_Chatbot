@@ -8,9 +8,6 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as stepfunctions from 'aws-cdk-lib/aws-stepfunctions';
 import * as stepfunctionsTasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as s3Notifications from 'aws-cdk-lib/aws-s3-notifications';
-import * as bedrock from 'aws-cdk-lib/aws-bedrock';
-import * as cr from 'aws-cdk-lib/custom-resources';
-
 
 export class YmcaAiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -18,18 +15,9 @@ export class YmcaAiStack extends cdk.Stack {
 
     // S3 Bucket for document storage with input/ and output/ prefixes
     // input/ - stores initial documents uploaded for processing
-    // output/ - stores processed output from textract pipeline
+    // output/ - stores processed output from textract pipeline (used by Bedrock Knowledge Base)
     const documentsBucket = new s3.Bucket(this, 'YmcaDocumentsBucket', {
       bucketName: `ymca-documents-${this.account}-${this.region}`,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-    });
-
-    // S3 Bucket for vector embeddings storage
-    const vectorStoreBucket = new s3.Bucket(this, 'YmcaVectorStoreBucket', {
-      bucketName: `ymca-vector-store-${this.account}-${this.region}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -74,8 +62,6 @@ export class YmcaAiStack extends cdk.Stack {
               resources: [
                 documentsBucket.bucketArn,
                 `${documentsBucket.bucketArn}/*`,
-                vectorStoreBucket.bucketArn,
-                `${vectorStoreBucket.bucketArn}/*`,
               ],
             }),
             // DynamoDB permissions
@@ -113,6 +99,8 @@ export class YmcaAiStack extends cdk.Stack {
                 'bedrock:InvokeModelWithResponseStream',
                 'bedrock:Retrieve',
                 'bedrock:RetrieveAndGenerate',
+                'bedrock:ListKnowledgeBases',
+                'bedrock:GetKnowledgeBase',
               ],
               resources: ['*'],
             }),
@@ -158,7 +146,8 @@ export class YmcaAiStack extends cdk.Stack {
             },
             body: JSON.stringify({
               message: 'YMCA AI Agent Proxy - Not yet implemented',
-              timestamp: new Date().toISOString()
+              timestamp: new Date().toISOString(),
+              knowledgeBaseReady: process.env.KNOWLEDGE_BASE_ID ? true : false
             })
           };
         };
@@ -170,7 +159,7 @@ export class YmcaAiStack extends cdk.Stack {
         CONVERSATION_TABLE_NAME: conversationTable.tableName,
         ANALYTICS_TABLE_NAME: analyticsTable.tableName,
         DOCUMENTS_BUCKET: documentsBucket.bucketName,
-        VECTOR_STORE_BUCKET: vectorStoreBucket.bucketName,
+        // KNOWLEDGE_BASE_ID: 'Set this after creating Knowledge Base in Bedrock console'
       },
     });
 
@@ -208,11 +197,10 @@ export class YmcaAiStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/textract-postprocessor'),
       role: lambdaExecutionRole,
-      timeout: cdk.Duration.minutes(15),
-      memorySize: 1024,
+      timeout: cdk.Duration.minutes(15), // Keep 15 minutes for processing large documents
+      memorySize: 2048, // Increase memory for large document processing
       environment: {
         DOCUMENTS_BUCKET: documentsBucket.bucketName,
-        VECTOR_STORE_BUCKET: vectorStoreBucket.bucketName,
       },
     });
 
@@ -222,7 +210,7 @@ export class YmcaAiStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/check-textract-status'),
       role: lambdaExecutionRole,
-      timeout: cdk.Duration.minutes(2),
+      timeout: cdk.Duration.minutes(5),
       memorySize: 256,
     });
 
@@ -330,13 +318,6 @@ export class YmcaAiStack extends cdk.Stack {
       resources: [documentProcessingWorkflow.stateMachineArn],
     }));
 
-    // Create Bedrock Knowledge Base with S3 Vectors using Custom Resources
-    const knowledgeBaseResources = this.createBedrockKnowledgeBase(
-      documentsBucket,
-      vectorStoreBucket,
-      lambdaExecutionRole
-    );
-
     // Outputs for reference
     new cdk.CfnOutput(this, 'ApiEndpoint', {
       value: api.url,
@@ -345,12 +326,7 @@ export class YmcaAiStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'DocumentsBucketName', {
       value: documentsBucket.bucketName,
-      description: 'S3 bucket for YMCA documents (input/ and output/ prefixes)',
-    });
-
-    new cdk.CfnOutput(this, 'VectorStoreBucketName', {
-      value: vectorStoreBucket.bucketName,
-      description: 'S3 bucket for vector embeddings storage',
+      description: 'S3 bucket for YMCA documents (input/ for uploads, output/ for Bedrock Knowledge Base)',
     });
 
     new cdk.CfnOutput(this, 'ConversationTableName', {
@@ -368,49 +344,18 @@ export class YmcaAiStack extends cdk.Stack {
       description: 'Step Functions state machine for document processing pipeline',
     });
 
-    new cdk.CfnOutput(this, 'KnowledgeBaseId', {
-      value: knowledgeBaseResources.knowledgeBase.attrKnowledgeBaseId,
-      description: 'Bedrock Knowledge Base ID for RAG queries',
-    });
-
-    new cdk.CfnOutput(this, 'KnowledgeBaseArn', {
-      value: knowledgeBaseResources.knowledgeBase.attrKnowledgeBaseArn,
-      description: 'Bedrock Knowledge Base ARN',
-    });
-
-    new cdk.CfnOutput(this, 'DataSourceId', {
-      value: knowledgeBaseResources.dataSource.attrDataSourceId,
-      description: 'Bedrock Knowledge Base Data Source ID',
-    });
-
-    new cdk.CfnOutput(this, 'S3VectorBucketName', {
-      value: knowledgeBaseResources.vectorBucketName,
-      description: 'S3 Vector Bucket for embeddings storage',
-    });
-
-    new cdk.CfnOutput(this, 'VectorIndexName', {
-      value: knowledgeBaseResources.vectorIndexName,
-      description: 'S3 Vector Index name for embeddings',
-    });
-
-    new cdk.CfnOutput(this, 'S3VectorsSetupComplete', {
-      value: 'S3 Vectors created! Manual Knowledge Base setup required for S3 Vectors integration',
-      description: [
-        '✅ S3 VECTORS INFRASTRUCTURE CREATED:',
-        '- S3 Vector Bucket: Created with 1024 dimensions, cosine distance',
-        '- Vector Index: ymca-knowledge-index (ready for Bedrock integration)',
-        '',
-        '📋 MANUAL SETUP REQUIRED (CDK limitation):',
-        '1. Go to Bedrock Console > Knowledge Bases > Create Knowledge Base',
-        '2. Choose "Choose a vector store you have created"',
-        '3. Select S3 Vectors and use the created bucket',
-        '4. Use index: ymca-knowledge-index',
-        '5. Connect data source to processed documents',
-        '6. Use embedding model: amazon.titan-embed-text-v2:0',
-        '',
-        '💰 COST BENEFITS: ~90% cheaper than OpenSearch Serverless!',
-        '🚀 READY FOR: Full RAG pipeline with document processing and vector search'
-      ].join('\n'),
+    new cdk.CfnOutput(this, 'PostDeploymentInstructions', {
+      value: `
+NEXT STEPS - Create Bedrock Knowledge Base:
+1. Go to AWS Console > Bedrock > Knowledge bases
+2. Create knowledge base with S3 data source
+3. Use bucket: ${documentsBucket.bucketName}
+4. Set S3 prefix to: output/ (processed documents)
+5. Select "Titan Text Embeddings V2" model
+6. Choose "Quick create a new vector store" with S3 Vectors
+7. After creation, update Lambda env var KNOWLEDGE_BASE_ID
+      `,
+      description: 'Post-deployment setup instructions for Bedrock Knowledge Base',
     });
   }
 
@@ -426,9 +371,9 @@ export class YmcaAiStack extends cdk.Stack {
       outputPath: '$.Payload',
     });
 
-    // Wait state for Textract async processing
+    // Wait state for Textract async processing - longer wait for large documents
     const waitForTextract = new stepfunctions.Wait(this, 'WaitForTextract', {
-      time: stepfunctions.WaitTime.duration(cdk.Duration.seconds(60)),
+      time: stepfunctions.WaitTime.duration(cdk.Duration.seconds(120)), // 2 minutes between checks
     });
 
     // Check Textract job status using external function
@@ -453,7 +398,7 @@ export class YmcaAiStack extends cdk.Stack {
       comment: 'Document processing failed',
     });
 
-    // Define the workflow with proper status checking
+    // Define the workflow with proper status checking and loop protection
     const definition = startTextractTask
       .next(waitForTextract)
       .next(checkTextractStatus)
@@ -473,366 +418,13 @@ export class YmcaAiStack extends cdk.Stack {
         .otherwise(waitForTextract) // Continue waiting if IN_PROGRESS
       );
 
-    // Create the state machine
+    // Create the state machine with extended timeout for large documents
     const stateMachine = new stepfunctions.StateMachine(this, 'YmcaDocumentProcessingWorkflow', {
       stateMachineName: 'ymca-document-processing',
       definitionBody: stepfunctions.DefinitionBody.fromChainable(definition),
-      timeout: cdk.Duration.minutes(30),
+      timeout: cdk.Duration.hours(2), // 2 hours for very large documents
     });
 
     return stateMachine;
-  }
-
-  private createBedrockKnowledgeBase(
-    documentsBucket: s3.Bucket,
-    vectorStoreBucket: s3.Bucket,
-    lambdaExecutionRole: iam.Role
-  ) {
-    // Create IAM role for Custom Resource Lambda
-    const customResourceRole = new iam.Role(this, 'S3VectorsCustomResourceRole', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
-      inlinePolicies: {
-        S3VectorsPolicy: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                's3vectors:CreateVectorBucket',
-                's3vectors:DeleteVectorBucket',
-                's3vectors:GetVectorBucket',
-                's3vectors:CreateIndex',
-                's3vectors:DeleteIndex',
-                's3vectors:GetIndex',
-                's3vectors:ListIndexes',
-              ],
-              resources: ['*'],
-            }),
-          ],
-        }),
-      },
-    });
-
-    // Custom Resource Lambda for S3 Vectors management using boto3
-    const s3VectorsCustomResource = new lambda.Function(this, 'S3VectorsCustomResourceFunction', {
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: 'index.handler',
-      role: customResourceRole,
-      timeout: cdk.Duration.minutes(5),
-      code: lambda.Code.fromInline(`
-import boto3
-import json
-import cfnresponse
-import logging
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-def handler(event, context):
-    try:
-        logger.info(f"Event: {json.dumps(event)}")
-        
-        request_type = event['RequestType']
-        properties = event['ResourceProperties']
-        
-        # Create S3 Vectors client
-        s3vectors = boto3.client('s3vectors', region_name=properties['Region'])
-        
-        vector_bucket_name = f"ymca-vectors-{properties['AccountId']}-{properties['Region']}"
-        vector_index_name = "ymca-knowledge-index"
-        
-        if request_type == 'Create':
-            try:
-                # Create S3 Vector Bucket
-                logger.info(f"Creating vector bucket: {vector_bucket_name}")
-                s3vectors.create_vector_bucket(
-                    vectorBucketName=vector_bucket_name,
-                    encryptionConfiguration={
-                        'sseType': 'SSE-S3'
-                    }
-                )
-                logger.info(f"Vector bucket created successfully: {vector_bucket_name}")
-                
-                # Create Vector Index
-                logger.info(f"Creating vector index: {vector_index_name}")
-                s3vectors.create_index(
-                    vectorBucketName=vector_bucket_name,
-                    indexName=vector_index_name,
-                    dataType='float32',
-                    dimension=1024,  # Titan Text v2 dimensions
-                    distanceMetric='cosine',
-                    metadataConfiguration={
-                        'nonFilterableMetadataKeys': ['source_text', 'chunk_id']
-                    }
-                )
-                logger.info(f"Vector index created successfully: {vector_index_name}")
-                
-                # Construct ARNs
-                vector_bucket_arn = f"arn:aws:s3vectors:{properties['Region']}:{properties['AccountId']}:bucket/{vector_bucket_name}"
-                vector_index_arn = f"arn:aws:s3vectors:{properties['Region']}:{properties['AccountId']}:index/{vector_bucket_name}/{vector_index_name}"
-                
-                response_data = {
-                    'VectorBucketName': vector_bucket_name,
-                    'VectorBucketArn': vector_bucket_arn,
-                    'VectorIndexName': vector_index_name,
-                    'VectorIndexArn': vector_index_arn
-                }
-                
-                cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
-                
-            except Exception as e:
-                logger.error(f"Error creating S3 Vectors resources: {str(e)}")
-                cfnresponse.send(event, context, cfnresponse.FAILED, {})
-                
-        elif request_type == 'Update':
-            # For updates, just return existing values
-            vector_bucket_arn = f"arn:aws:s3vectors:{properties['Region']}:{properties['AccountId']}:bucket/{vector_bucket_name}"
-            vector_index_arn = f"arn:aws:s3vectors:{properties['Region']}:{properties['AccountId']}:index/{vector_bucket_name}/{vector_index_name}"
-            
-            response_data = {
-                'VectorBucketName': vector_bucket_name,
-                'VectorBucketArn': vector_bucket_arn,
-                'VectorIndexName': vector_index_name,
-                'VectorIndexArn': vector_index_arn
-            }
-            cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
-            
-        elif request_type == 'Delete':
-            try:
-                # Delete Vector Index first
-                logger.info(f"Deleting vector index: {vector_index_name}")
-                s3vectors.delete_index(
-                    vectorBucketName=vector_bucket_name,
-                    indexName=vector_index_name
-                )
-                logger.info(f"Vector index deleted: {vector_index_name}")
-                
-                # Delete Vector Bucket
-                logger.info(f"Deleting vector bucket: {vector_bucket_name}")
-                s3vectors.delete_vector_bucket(
-                    vectorBucketName=vector_bucket_name
-                )
-                logger.info(f"Vector bucket deleted: {vector_bucket_name}")
-                
-                cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-                
-            except Exception as e:
-                logger.error(f"Error deleting S3 Vectors resources: {str(e)}")
-                # Don't fail on delete errors to avoid stack deletion issues
-                cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-                
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        cfnresponse.send(event, context, cfnresponse.FAILED, {})
-`),
-    });
-
-    // Create Custom Resource to manage S3 Vectors
-    const s3VectorsResource = new cr.AwsCustomResource(this, 'S3VectorsResource', {
-      onCreate: {
-        service: 'Lambda',
-        action: 'invoke',
-        parameters: {
-          FunctionName: s3VectorsCustomResource.functionName,
-          Payload: JSON.stringify({
-            RequestType: 'Create',
-            ResourceProperties: {
-              AccountId: this.account,
-              Region: this.region,
-            },
-          }),
-        },
-        physicalResourceId: cr.PhysicalResourceId.of('s3-vectors-resource'),
-      },
-      onUpdate: {
-        service: 'Lambda',
-        action: 'invoke',
-        parameters: {
-          FunctionName: s3VectorsCustomResource.functionName,
-          Payload: JSON.stringify({
-            RequestType: 'Update',
-            ResourceProperties: {
-              AccountId: this.account,
-              Region: this.region,
-            },
-          }),
-        },
-        physicalResourceId: cr.PhysicalResourceId.of('s3-vectors-resource'),
-      },
-      onDelete: {
-        service: 'Lambda',
-        action: 'invoke',
-        parameters: {
-          FunctionName: s3VectorsCustomResource.functionName,
-          Payload: JSON.stringify({
-            RequestType: 'Delete',
-            ResourceProperties: {
-              AccountId: this.account,
-              Region: this.region,
-            },
-          }),
-        },
-      },
-      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
-      }),
-    });
-
-    // Extract values from Custom Resource response
-    const vectorBucketName = s3VectorsResource.getResponseField('Payload.VectorBucketName');
-    const vectorBucketArn = s3VectorsResource.getResponseField('Payload.VectorBucketArn');
-    const vectorIndexName = s3VectorsResource.getResponseField('Payload.VectorIndexName');
-    const vectorIndexArn = s3VectorsResource.getResponseField('Payload.VectorIndexArn');
-
-    // Create IAM role for Bedrock Knowledge Base
-    const bedrockKnowledgeBaseRole = new iam.Role(this, 'YmcaBedrockKnowledgeBaseRole', {
-      assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
-      inlinePolicies: {
-        BedrockKnowledgeBasePolicy: new iam.PolicyDocument({
-          statements: [
-            // S3 permissions for data source bucket
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                's3:GetObject',
-                's3:ListBucket',
-              ],
-              resources: [
-                documentsBucket.bucketArn,
-                `${documentsBucket.bucketArn}/*`,
-              ],
-            }),
-            // S3 Vectors permissions
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                's3vectors:PutVectors',
-                's3vectors:GetVectors',
-                's3vectors:DeleteVectors',
-                's3vectors:QueryVectors',
-                's3vectors:ListVectorIndexes',
-                's3vectors:GetIndex',
-                's3vectors:GetVectorBucket',
-              ],
-              resources: [
-                vectorBucketArn,
-                `${vectorBucketArn}/*`,
-                vectorIndexArn,
-              ],
-            }),
-            // Bedrock model permissions for embeddings
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                'bedrock:InvokeModel',
-              ],
-              resources: [
-                `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-              ],
-            }),
-          ],
-        }),
-      },
-    });
-
-    // Create Bedrock Knowledge Base with S3 Vectors
-    // Note: Using actual S3 Vectors created via Custom Resource with boto3
-    const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'YmcaKnowledgeBase', {
-      name: 'ymca-knowledge-base',
-      description: 'YMCA AI Knowledge Base for document retrieval and RAG using S3 Vectors',
-      roleArn: bedrockKnowledgeBaseRole.roleArn,
-      knowledgeBaseConfiguration: {
-        type: 'VECTOR',
-        vectorKnowledgeBaseConfiguration: {
-          embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-          embeddingModelConfiguration: {
-            bedrockEmbeddingModelConfiguration: {
-              dimensions: 1024, // Titan Text v2 uses 1024 dimensions
-            },
-          },
-        },
-      },
-      // Note: S3 Vectors support in Bedrock Knowledge Base is not yet available in CDK 2.215.0
-      // Using OpenSearch Serverless as fallback, but S3 Vectors infrastructure is created
-      // Users can manually create Knowledge Base with S3 Vectors in AWS Console
-      storageConfiguration: {
-        type: 'OPENSEARCH_SERVERLESS',
-        opensearchServerlessConfiguration: {
-          collectionArn: `arn:aws:aoss:${this.region}:${this.account}:collection/ymca-vectors-fallback`,
-          vectorIndexName: 'ymca-vector-index',
-          fieldMapping: {
-            vectorField: 'vector',
-            textField: 'text',
-            metadataField: 'metadata',
-          },
-        },
-      },
-    });
-
-    // Ensure knowledge base is created after custom resource
-    knowledgeBase.node.addDependency(s3VectorsResource);
-
-    // Create Data Source for the Knowledge Base
-    const dataSource = new bedrock.CfnDataSource(this, 'YmcaKnowledgeBaseDataSource', {
-      name: 'ymca-documents-source',
-      description: 'Data source for YMCA documents processed by Textract',
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: 'S3',
-        s3Configuration: {
-          bucketArn: documentsBucket.bucketArn,
-          inclusionPrefixes: ['output/processed-text/'], // Use processed Textract output
-        },
-      },
-      dataDeletionPolicy: 'DELETE',
-      vectorIngestionConfiguration: {
-        chunkingConfiguration: {
-          chunkingStrategy: 'FIXED_SIZE',
-          fixedSizeChunkingConfiguration: {
-            maxTokens: 512,
-            overlapPercentage: 20,
-          },
-        },
-        parsingConfiguration: {
-          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
-          bedrockFoundationModelConfiguration: {
-            modelArn: `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0`,
-            parsingPrompt: {
-              parsingPromptText: `Parse the following document content and extract meaningful text chunks for a knowledge base. 
-Focus on preserving important information, context, and structure. 
-Remove any OCR artifacts or formatting issues.
-Maintain the semantic meaning of the content.
-
-Document content:
-$input_text$`,
-            },
-          },
-        },
-      },
-    });
-
-    // Add Bedrock permissions to Lambda execution role for RAG queries
-    lambdaExecutionRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'bedrock:Retrieve',
-        'bedrock:RetrieveAndGenerate',
-      ],
-      resources: [
-        knowledgeBase.attrKnowledgeBaseArn,
-      ],
-    }));
-
-    return {
-      knowledgeBase,
-      dataSource,
-      serviceRole: bedrockKnowledgeBaseRole,
-      vectorBucketName,
-      vectorIndexName,
-      vectorBucketArn,
-      vectorIndexArn,
-    };
   }
 }
