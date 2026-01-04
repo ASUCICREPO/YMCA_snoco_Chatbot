@@ -1,8 +1,10 @@
 const { BedrockAgentRuntimeClient, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, InvokeModelCommand, InvokeModelWithResponseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
-const { TranslateClient, TranslateTextCommand, DetectDominantLanguageCommand } = require('@aws-sdk/client-translate');
+const { TranslateClient, TranslateTextCommand } = require('@aws-sdk/client-translate');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { Writable } = require('stream');
 
 // Initialize AWS clients
@@ -10,6 +12,7 @@ const bedrockAgentClient = new BedrockAgentRuntimeClient({ region: process.env.R
 const bedrockRuntimeClient = new BedrockRuntimeClient({ region: process.env.REGION || 'us-west-2' });
 const translateClient = new TranslateClient({ region: process.env.REGION || 'us-west-2' });
 const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.REGION || 'us-west-2' }));
+const s3Client = new S3Client({ region: process.env.REGION || 'us-west-2' });
 
 // Configuration
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID;
@@ -61,42 +64,29 @@ async function handleRequest(event, responseStream = null) {
     const queryId = generateQueryId();
     const timestamp = Date.now();
 
-    // Step 1: Detect language if auto-detection is enabled
-    let detectedLanguage = 'en';
-    let originalLanguage = 'en';
-    
-    if (language === 'auto') {
-      try {
-        const detectCommand = new DetectDominantLanguageCommand({
-          Text: message
-        });
-        const detectResult = await translateClient.send(detectCommand);
-        
-        if (detectResult.Languages && detectResult.Languages.length > 0) {
-          detectedLanguage = detectResult.Languages[0].LanguageCode;
-          originalLanguage = detectedLanguage;
-        }
-      } catch (error) {
-        console.warn('Language detection failed, defaulting to English:', error);
-      }
-    } else {
-      detectedLanguage = language;
-      originalLanguage = language;
-    }
-
-    console.log(`Detected language: ${detectedLanguage} (${SUPPORTED_LANGUAGES[detectedLanguage] || 'Unknown'})`);
+    // Step 1: Initialize language variables (detection happens during translation)
+    let detectedLanguage = language === 'auto' ? 'en' : language;
+    let originalLanguage = language === 'auto' ? 'en' : language;
 
     // Step 2: Translate query to English if needed (for better RAG performance)
     let queryInEnglish = message;
-    if (detectedLanguage !== 'en') {
+    if (language === 'auto' || detectedLanguage !== 'en') {
       try {
         const translateCommand = new TranslateTextCommand({
           Text: message,
-          SourceLanguageCode: detectedLanguage,
+          SourceLanguageCode: language === 'auto' ? 'auto' : detectedLanguage,
           TargetLanguageCode: 'en'
         });
         const translateResult = await translateClient.send(translateCommand);
         queryInEnglish = translateResult.TranslatedText;
+
+        // Extract detected language from auto-detection
+        if (language === 'auto' && translateResult.SourceLanguageCode) {
+          detectedLanguage = translateResult.SourceLanguageCode;
+          originalLanguage = translateResult.SourceLanguageCode;
+          console.log(`Auto-detected language: ${detectedLanguage}`);
+        }
+
         console.log(`Translated query to English: ${queryInEnglish}`);
       } catch (error) {
         console.warn('Translation to English failed, using original query:', error);
@@ -128,14 +118,46 @@ async function handleRequest(event, responseStream = null) {
       
       // Process retrieved chunks and build context
       if (retrieveResult.retrievalResults && retrieveResult.retrievalResults.length > 0) {
-        // Extract citations with proper metadata
-        citations = retrieveResult.retrievalResults.map((result, index) => ({
-          id: `source-${index + 1}`,
-          title: `YMCA Historical Document ${index + 1}`,
-          source: result.location?.s3Location?.uri || 'YMCA Archives',
-          confidence: result.score || 0.8,
-          excerpt: result.content?.text?.substring(0, 300) + '...' || '',
-          fullText: result.content?.text || ''
+        // Extract citations with proper metadata and generate pre-signed URLs
+        citations = await Promise.all(retrieveResult.retrievalResults.map(async (result, index) => {
+          const s3Uri = result.location?.s3Location?.uri || '';
+
+          // Extract original PDF filename from the processed JSON path
+          // Example: s3://bucket/output/processed-text/doc-123/1981.pdf.json -> 1981.pdf
+          let pdfFilename = 'Document';
+          let pdfUrl = null;
+
+          if (s3Uri) {
+            const match = s3Uri.match(/\/([^/]+)\.pdf\.json$/);
+            if (match) {
+              pdfFilename = match[1] + '.pdf';
+
+              // Generate pre-signed URL for the original PDF in input/ directory
+              try {
+                const bucket = process.env.DOCUMENTS_BUCKET;
+                const key = `input/${pdfFilename}`;
+
+                const command = new GetObjectCommand({
+                  Bucket: bucket,
+                  Key: key
+                });
+
+                pdfUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 }); // 1 hour
+              } catch (error) {
+                console.warn(`Failed to generate pre-signed URL for ${pdfFilename}:`, error);
+              }
+            }
+          }
+
+          return {
+            id: `source-${index + 1}`,
+            title: pdfFilename,
+            source: `YMCA Historical Archives`,
+            sourceUrl: pdfUrl,
+            confidence: result.score || 0.8,
+            excerpt: result.content?.text?.substring(0, 300) + '...' || '',
+            fullText: result.content?.text || ''
+          };
         }));
 
         // Build rich context from retrieved chunks
@@ -307,25 +329,53 @@ IMPORTANT:
     let finalResponse = ragResponse;
     if (originalLanguage !== 'en' && SUPPORTED_LANGUAGES[originalLanguage]) {
       try {
-        // For structured responses, translate the narrative parts
+        // For structured responses, translate ALL text fields
         if (ragResponse.type === 'structured' || ragResponse.type === 'narrative') {
-          const textToTranslate = ragResponse.content.story.narrative;
-          const translateResponseCommand = new TranslateTextCommand({
-            Text: textToTranslate,
-            SourceLanguageCode: 'en',
-            TargetLanguageCode: originalLanguage
-          });
-          const translateResponseResult = await translateClient.send(translateResponseCommand);
-          
-          // Create translated version while preserving structure
+          const content = ragResponse.content;
+
+          // Collect all text to translate
+          const textsToTranslate = [
+            content.story?.title || '',
+            content.story?.narrative || '',
+            content.story?.timeline || '',
+            content.story?.locations || '',
+            content.story?.keyPeople || '',
+            content.story?.whyItMatters || '',
+            ...(content.lessonsAndThemes || []),
+            content.modernReflection || '',
+            ...(content.exploreFurther || [])
+          ].filter(text => text && text.length > 0);
+
+          // Translate all texts in batch
+          const translatedTexts = [];
+          for (const text of textsToTranslate) {
+            const translateCmd = new TranslateTextCommand({
+              Text: text,
+              SourceLanguageCode: 'en',
+              TargetLanguageCode: originalLanguage
+            });
+            const result = await translateClient.send(translateCmd);
+            translatedTexts.push(result.TranslatedText);
+          }
+
+          // Reconstruct response with translated texts
+          let textIndex = 0;
           finalResponse = {
             ...ragResponse,
             content: {
-              ...ragResponse.content,
+              ...content,
               story: {
-                ...ragResponse.content.story,
-                narrative: translateResponseResult.TranslatedText
-              }
+                title: translatedTexts[textIndex++],
+                narrative: translatedTexts[textIndex++],
+                timeline: translatedTexts[textIndex++],
+                locations: translatedTexts[textIndex++],
+                keyPeople: translatedTexts[textIndex++],
+                whyItMatters: translatedTexts[textIndex++]
+              },
+              lessonsAndThemes: (content.lessonsAndThemes || []).map(() => translatedTexts[textIndex++]),
+              modernReflection: translatedTexts[textIndex++],
+              exploreFurther: (content.exploreFurther || []).map(() => translatedTexts[textIndex++]),
+              citedSources: content.citedSources || []
             }
           };
         }
@@ -530,42 +580,29 @@ async function handleStreamingRequest(event, responseStream) {
     const queryId = generateQueryId();
     const timestamp = Date.now();
 
-    // Step 1: Detect language if auto-detection is enabled
-    let detectedLanguage = 'en';
-    let originalLanguage = 'en';
-    
-    if (language === 'auto') {
-      try {
-        const detectCommand = new DetectDominantLanguageCommand({
-          Text: message
-        });
-        const detectResult = await translateClient.send(detectCommand);
-        
-        if (detectResult.Languages && detectResult.Languages.length > 0) {
-          detectedLanguage = detectResult.Languages[0].LanguageCode;
-          originalLanguage = detectedLanguage;
-        }
-      } catch (error) {
-        console.warn('Language detection failed, defaulting to English:', error);
-      }
-    } else {
-      detectedLanguage = language;
-      originalLanguage = language;
-    }
-
-    console.log(`Detected language: ${detectedLanguage} (${SUPPORTED_LANGUAGES[detectedLanguage] || 'Unknown'})`);
+    // Step 1: Initialize language variables (detection happens during translation)
+    let detectedLanguage = language === 'auto' ? 'en' : language;
+    let originalLanguage = language === 'auto' ? 'en' : language;
 
     // Step 2: Translate query to English if needed (for better RAG performance)
     let queryInEnglish = message;
-    if (detectedLanguage !== 'en') {
+    if (language === 'auto' || detectedLanguage !== 'en') {
       try {
         const translateCommand = new TranslateTextCommand({
           Text: message,
-          SourceLanguageCode: detectedLanguage,
+          SourceLanguageCode: language === 'auto' ? 'auto' : detectedLanguage,
           TargetLanguageCode: 'en'
         });
         const translateResult = await translateClient.send(translateCommand);
         queryInEnglish = translateResult.TranslatedText;
+
+        // Extract detected language from auto-detection
+        if (language === 'auto' && translateResult.SourceLanguageCode) {
+          detectedLanguage = translateResult.SourceLanguageCode;
+          originalLanguage = translateResult.SourceLanguageCode;
+          console.log(`Auto-detected language: ${detectedLanguage}`);
+        }
+
         console.log(`Translated query to English: ${queryInEnglish}`);
       } catch (error) {
         console.warn('Translation to English failed, using original query:', error);
@@ -596,14 +633,46 @@ async function handleStreamingRequest(event, responseStream) {
       
       // Process retrieved chunks and build context
       if (retrieveResult.retrievalResults && retrieveResult.retrievalResults.length > 0) {
-        // Extract citations with proper metadata
-        citations = retrieveResult.retrievalResults.map((result, index) => ({
-          id: `source-${index + 1}`,
-          title: `YMCA Historical Document ${index + 1}`,
-          source: result.location?.s3Location?.uri || 'YMCA Archives',
-          confidence: result.score || 0.8,
-          excerpt: result.content?.text?.substring(0, 300) + '...' || '',
-          fullText: result.content?.text || ''
+        // Extract citations with proper metadata and generate pre-signed URLs
+        citations = await Promise.all(retrieveResult.retrievalResults.map(async (result, index) => {
+          const s3Uri = result.location?.s3Location?.uri || '';
+
+          // Extract original PDF filename from the processed JSON path
+          // Example: s3://bucket/output/processed-text/doc-123/1981.pdf.json -> 1981.pdf
+          let pdfFilename = 'Document';
+          let pdfUrl = null;
+
+          if (s3Uri) {
+            const match = s3Uri.match(/\/([^/]+)\.pdf\.json$/);
+            if (match) {
+              pdfFilename = match[1] + '.pdf';
+
+              // Generate pre-signed URL for the original PDF in input/ directory
+              try {
+                const bucket = process.env.DOCUMENTS_BUCKET;
+                const key = `input/${pdfFilename}`;
+
+                const command = new GetObjectCommand({
+                  Bucket: bucket,
+                  Key: key
+                });
+
+                pdfUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 }); // 1 hour
+              } catch (error) {
+                console.warn(`Failed to generate pre-signed URL for ${pdfFilename}:`, error);
+              }
+            }
+          }
+
+          return {
+            id: `source-${index + 1}`,
+            title: pdfFilename,
+            source: `YMCA Historical Archives`,
+            sourceUrl: pdfUrl,
+            confidence: result.score || 0.8,
+            excerpt: result.content?.text?.substring(0, 300) + '...' || '',
+            fullText: result.content?.text || ''
+          };
         }));
 
         // Build rich context from retrieved chunks
@@ -628,14 +697,15 @@ RESPONSE REQUIREMENTS:
 3. **NARRATIVE STRUCTURE**: Create an engaging story with clear flow
 4. **HISTORICAL CONTEXT**: Provide rich background and connect events to broader themes
 5. **HUMAN ELEMENTS**: Include specific people, dates, locations, and personal stories from the context
-6. **CITE SOURCES**: Reference the source numbers [Source 1], [Source 2], etc. in your narrative
-7. **CONVERSATION STARTERS**: Generate 3 engaging questions that help users explore related topics, compare to today, or dig deeper into specific aspects
+6. **CITE SOURCES WITH PAGES**: Reference sources like [Source 1, p.15] or [Source 2, pp.23-24] in your narrative. Extract page numbers from the source metadata if available.
+7. **UNIQUE INSIGHTS**: If this is a follow-up question, provide NEW information and perspectives not covered in previous responses. Avoid repeating the same historical facts.
+8. **CONVERSATION STARTERS**: Generate 3 engaging, SPECIFIC questions that explore different angles, time periods, or themes NOT covered in this response
 
 RESPONSE FORMAT (JSON):
 {
   "story": {
     "title": "Engaging title that captures the essence of the historical moment",
-    "narrative": "Rich, multi-paragraph storytelling response that weaves together information from the sources. Include specific dates, names, places, and events. Reference sources like [Source 1] naturally within the narrative.",
+    "narrative": "Rich, multi-paragraph storytelling response that weaves together information from the sources. Include specific dates, names, places, and events. Reference sources like [Source 1, p.15] naturally within the narrative.",
     "timeline": "Key dates and periods mentioned in the sources",
     "locations": "Specific places mentioned in the retrieved context",
     "keyPeople": "Important individuals and their roles as mentioned in the sources",
@@ -647,15 +717,19 @@ RESPONSE FORMAT (JSON):
   ],
   "modernReflection": "How this historical moment teaches us about today's challenges and opportunities in YMCA work",
   "exploreFurther": [
-    "How does this compare to today?",
-    "What other [related topic] did the YMCA respond to?",
-    "Tell me about YMCA [related aspect from the story]"
-  ]
+    "Specific question exploring a different time period or theme",
+    "Question about a different aspect not covered above",
+    "Question that connects to a different YMCA program or initiative"
+  ],
+  "citedSources": [1, 2, 5]
 }
 
 TONE: Engaging, authoritative, and inspiring. Write as if you're a passionate historian sharing fascinating discoveries from newly uncovered archives. Use vivid language and specific details from the sources to make history come alive.
 
-IMPORTANT: 
+IMPORTANT:
+- Include a "citedSources" array listing ONLY the source numbers you actually referenced in your narrative
+- Include page numbers in citations when available from the source metadata
+- If this is a follow-up question, focus on NEW aspects not previously discussed
 - If the retrieved context doesn't contain enough information, acknowledge this honestly
 - Always ground your response in the actual retrieved sources
 - Don't invent facts not present in the context
@@ -775,25 +849,53 @@ IMPORTANT:
     let finalResponse = ragResponse;
     if (originalLanguage !== 'en' && SUPPORTED_LANGUAGES[originalLanguage]) {
       try {
-        // For structured responses, translate the narrative parts
+        // For structured responses, translate ALL text fields
         if (ragResponse.type === 'structured' || ragResponse.type === 'narrative') {
-          const textToTranslate = ragResponse.content.story.narrative;
-          const translateResponseCommand = new TranslateTextCommand({
-            Text: textToTranslate,
-            SourceLanguageCode: 'en',
-            TargetLanguageCode: originalLanguage
-          });
-          const translateResponseResult = await translateClient.send(translateResponseCommand);
-          
-          // Create translated version while preserving structure
+          const content = ragResponse.content;
+
+          // Collect all text to translate
+          const textsToTranslate = [
+            content.story?.title || '',
+            content.story?.narrative || '',
+            content.story?.timeline || '',
+            content.story?.locations || '',
+            content.story?.keyPeople || '',
+            content.story?.whyItMatters || '',
+            ...(content.lessonsAndThemes || []),
+            content.modernReflection || '',
+            ...(content.exploreFurther || [])
+          ].filter(text => text && text.length > 0);
+
+          // Translate all texts in batch
+          const translatedTexts = [];
+          for (const text of textsToTranslate) {
+            const translateCmd = new TranslateTextCommand({
+              Text: text,
+              SourceLanguageCode: 'en',
+              TargetLanguageCode: originalLanguage
+            });
+            const result = await translateClient.send(translateCmd);
+            translatedTexts.push(result.TranslatedText);
+          }
+
+          // Reconstruct response with translated texts
+          let textIndex = 0;
           finalResponse = {
             ...ragResponse,
             content: {
-              ...ragResponse.content,
+              ...content,
               story: {
-                ...ragResponse.content.story,
-                narrative: translateResponseResult.TranslatedText
-              }
+                title: translatedTexts[textIndex++],
+                narrative: translatedTexts[textIndex++],
+                timeline: translatedTexts[textIndex++],
+                locations: translatedTexts[textIndex++],
+                keyPeople: translatedTexts[textIndex++],
+                whyItMatters: translatedTexts[textIndex++]
+              },
+              lessonsAndThemes: (content.lessonsAndThemes || []).map(() => translatedTexts[textIndex++]),
+              modernReflection: translatedTexts[textIndex++],
+              exploreFurther: (content.exploreFurther || []).map(() => translatedTexts[textIndex++]),
+              citedSources: content.citedSources || []
             }
           };
         }
@@ -854,12 +956,18 @@ IMPORTANT:
       console.error('Failed to store analytics:', error);
     }
 
+    // Filter sources to only include cited ones
+    const citedSourceIndices = finalResponse.content.citedSources || [];
+    const filteredCitations = citedSourceIndices.length > 0
+      ? citations.filter((_, index) => citedSourceIndices.includes(index + 1))
+      : citations;
+
     // Send final structured response
     const responseData = {
       response: finalResponse.content,
       responseType: finalResponse.type,
       rawResponse: finalResponse.rawText,
-      sources: citations,
+      sources: filteredCitations,
       conversationId: conversationId || sessionId,
       sessionId: sessionId,
       language: originalLanguage,
@@ -868,7 +976,7 @@ IMPORTANT:
       timestamp: new Date(timestamp).toISOString(),
       metadata: {
         knowledgeBaseUsed: true,
-        citationsFound: citations.length,
+        citationsFound: filteredCitations.length,
         responseStructured: finalResponse.type === 'structured',
         fallbackUsed: finalResponse.fallback || false
       }

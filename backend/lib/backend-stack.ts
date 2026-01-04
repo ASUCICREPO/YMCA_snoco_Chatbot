@@ -120,6 +120,14 @@ export class YmcaAiStack extends cdk.Stack {
                 `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`,
               ],
             }),
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'translate:TranslateText',
+                'comprehend:DetectDominantLanguage',
+              ],
+              resources: ['*'],
+            }),
           ],
         }),
       },

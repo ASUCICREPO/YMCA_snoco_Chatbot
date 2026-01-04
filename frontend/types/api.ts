@@ -42,6 +42,7 @@ export interface Source {
   id: string;
   title: string;
   source: string;
+  sourceUrl?: string;
   confidence: number;
   excerpt: string;
   fullText?: string;

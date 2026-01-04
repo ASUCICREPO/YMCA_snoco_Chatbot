@@ -37,9 +37,10 @@ const imgImage3 = "http://localhost:3845/assets/d005aa1de1f0be0acb65a4ca67a09630
  */
 interface MessageBubbleProps {
   message: Message;
+  onSuggestionClick?: (suggestion: string) => void;
 }
 
-const MessageBubble = ({ message }: MessageBubbleProps) => {
+const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [displayedText, setDisplayedText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -287,9 +288,16 @@ const MessageBubble = ({ message }: MessageBubbleProps) => {
                           {source.excerpt}
                         </p>
                       )}
-                      <button className={cn("font-verdana font-medium leading-[18px] not-italic text-[#0089d0] text-[12px] hover:underline cursor-pointer")}>
-                        View Source
-                      </button>
+                      {source.sourceUrl && (
+                        <a
+                          href={source.sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={cn("font-verdana font-medium leading-[18px] not-italic text-[#0089d0] text-[12px] hover:underline cursor-pointer")}
+                        >
+                          View Source
+                        </a>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -307,6 +315,7 @@ const MessageBubble = ({ message }: MessageBubbleProps) => {
                 {exploreFurther.slice(0, 3).map((suggestion, index) => (
                   <button
                     key={index}
+                    onClick={() => onSuggestionClick?.(suggestion)}
                     className={cn("bg-[rgba(0,137,208,0.1)] border border-[rgba(0,137,208,0.3)] border-solid content-stretch flex gap-[8px] items-center px-[21px] py-[12px] relative rounded-[100px] shrink-0 hover:bg-[rgba(0,137,208,0.2)] transition-colors cursor-pointer")}
                   >
                     <p className="font-normal leading-[20px] not-italic text-[#231f20] text-[14px]">
@@ -353,6 +362,14 @@ export default function ChatPage() {
     }
   };
 
+  const handleSuggestionClick = (suggestion: string) => {
+    if (!isLoading) {
+      setInputValue(suggestion);
+      // Optionally, auto-submit the suggestion
+      // sendMessage(suggestion);
+    }
+  };
+
   return (
     <div
       className={cn("content-stretch flex flex-col items-start relative size-full min-h-screen bg-[#E1F4FA]")}
@@ -395,7 +412,7 @@ export default function ChatPage() {
 
           {/* Messages */}
           {conversation?.messages.map((message) => (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble key={message.id} message={message} onSuggestionClick={handleSuggestionClick} />
           ))}
 
           <div ref={messagesEndRef} />
