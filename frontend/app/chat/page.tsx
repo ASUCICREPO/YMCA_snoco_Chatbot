@@ -18,8 +18,6 @@ import '../../lib/i18n';
 
 // Icon Components imported from lib/icons
 import {
-  GlobeIcon,
-  ChevronDownIcon,
   SendIcon,
   StoryIcon,
   CalendarIcon,
@@ -102,8 +100,8 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
   // For streaming messages, show the typing effect
   if (message.isStreaming) {
     return (
-      <div className="bg-white border border-[#d1d5dc] border-solid content-stretch flex flex-col items-start overflow-clip relative rounded-[12px] shrink-0 w-full max-w-[976px]">
-        <div className="content-stretch flex flex-col gap-[40px] items-start p-[40px] relative shrink-0 w-full">
+      <div className="bg-white border border-[#d1d5dc] border-solid content-stretch flex flex-col items-start overflow-hidden relative rounded-[12px] shrink-0 w-full max-w-[976px]">
+        <div className="content-stretch flex flex-col gap-[40px] items-start p-[40px] relative shrink-0 w-full break-words overflow-wrap-anywhere">
           <div className={cn("content-stretch flex flex-col gap-[16px] items-start relative shrink-0 w-full")}>
             {/* STORY Badge */}
             <div className={cn("content-stretch flex gap-[8px] items-center relative shrink-0")}>
@@ -132,8 +130,8 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
     const { story, lessonsAndThemes, modernReflection, exploreFurther } = response.response;
 
     return (
-      <div className="bg-white border border-[#d1d5dc] border-solid content-stretch flex flex-col items-start overflow-clip relative rounded-[12px] shrink-0 w-full max-w-[976px]">
-        <div className="content-stretch flex flex-col gap-[40px] items-start p-[40px] relative shrink-0 w-full">
+      <div className="bg-white border border-[#d1d5dc] border-solid content-stretch flex flex-col items-start overflow-hidden relative rounded-[12px] shrink-0 w-full max-w-[976px]">
+        <div className="content-stretch flex flex-col gap-[40px] items-start p-[40px] relative shrink-0 w-full break-words overflow-wrap-anywhere">
 
           {/* Story Section */}
           {story && (
@@ -376,50 +374,19 @@ const getStarterPrompts = (t: any) => [
   }
 ];
 
-// Supported languages
-const SUPPORTED_LANGUAGES = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Español' },
-  { code: 'fr', name: 'Français' },
-  { code: 'de', name: 'Deutsch' },
-  { code: 'it', name: 'Italiano' },
-  { code: 'pt', name: 'Português' },
-  { code: 'zh', name: '中文' },
-  { code: 'ja', name: '日本語' },
-  { code: 'ko', name: '한국어' },
-  { code: 'ar', name: 'العربية' },
-  { code: 'hi', name: 'हिन्दी' },
-  { code: 'ru', name: 'Русский' }
-];
-
 /**
  * Main Chat Page Component
  */
 export default function ChatPage() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const { sendMessage, isLoading, conversation } = useChat();
   const [inputValue, setInputValue] = useState('');
-  const [selectedLanguage, setSelectedLanguage] = useState('en');
-  const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [conversation?.messages]);
-
-  // Close language dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (languageDropdownOpen && !target.closest('.language-selector')) {
-        setLanguageDropdownOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [languageDropdownOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -450,88 +417,16 @@ export default function ChatPage() {
     }
   };
 
-  const handleLanguageChange = (languageCode: string) => {
-    setSelectedLanguage(languageCode);
-    setLanguageDropdownOpen(false);
-
-    // Trigger Google Translate
-    const googleTranslateCombo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
-    if (googleTranslateCombo) {
-      // Map language codes to Google Translate codes
-      const langMap: Record<string, string> = {
-        'en': 'en',
-        'es': 'es',
-        'fr': 'fr',
-        'de': 'de',
-        'it': 'it',
-        'pt': 'pt',
-        'zh': 'zh-CN',
-        'ja': 'ja',
-        'ko': 'ko',
-        'ar': 'ar',
-        'hi': 'hi',
-        'ru': 'ru'
-      };
-
-      const googleLangCode = langMap[languageCode] || languageCode;
-      googleTranslateCombo.value = googleLangCode;
-      googleTranslateCombo.dispatchEvent(new Event('change'));
-    }
-  };
-
   return (
     <div
       className={cn("content-stretch flex flex-col items-start relative size-full min-h-screen bg-[#E1F4FA]")}
     >
       {/* Header */}
       <div className="content-stretch flex flex-col items-center justify-center px-[100px] py-0 relative shrink-0 w-full">
-        <div className="content-stretch flex items-center justify-between px-[24px] py-[24px] relative shrink-0 w-full">
+        <div className="content-stretch flex items-center px-[24px] py-[24px] relative shrink-0 w-full">
           <Link href="/" className="h-[72px] w-[94.161px] relative shrink-0 cursor-pointer hover:opacity-80 transition-opacity p-[8px] -m-[8px]">
             <img alt="YMCA Logo" className="w-full h-full object-contain" src="/logo.png" />
           </Link>
-          <div className="relative language-selector">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setLanguageDropdownOpen(!languageDropdownOpen);
-              }}
-              className="bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center px-[16px] py-[12px] relative rounded-[12px] shrink-0 hover:border-[#0089d0] transition-colors cursor-pointer"
-            >
-              <div className="relative shrink-0 size-[20px] text-[#636466]">
-                <GlobeIcon />
-              </div>
-              <p className="font-medium leading-[24px] not-italic relative shrink-0 text-[#231f20] text-[16px] text-center text-nowrap">
-                {SUPPORTED_LANGUAGES.find(lang => lang.code === selectedLanguage)?.name || 'English'}
-              </p>
-              <div className={cn("relative shrink-0 size-[24px] text-[#636466] transition-transform", languageDropdownOpen && "rotate-180")}>
-                <ChevronDownIcon />
-              </div>
-            </button>
-
-            {languageDropdownOpen && (
-              <div className="absolute right-0 top-full mt-[8px] bg-white border border-[#d1d5dc] rounded-[12px] shadow-lg overflow-hidden z-50 min-w-[200px]">
-                {SUPPORTED_LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.code}
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleLanguageChange(lang.code);
-                    }}
-                    className={cn(
-                      "w-full text-left px-[16px] py-[12px] hover:bg-[#f9fafb] transition-colors cursor-pointer",
-                      selectedLanguage === lang.code && "bg-[#E1F4FA] text-[#0089d0] font-medium"
-                    )}
-                  >
-                    {lang.name}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 

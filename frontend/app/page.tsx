@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import Image from 'next/image';
 import { cn } from '../lib/utils';
 import { useChat } from './hooks/useChat';
@@ -13,13 +14,33 @@ import {
   SendIcon,
   ChevronDownIcon
 } from '../lib/icons';
+import '../lib/i18n';
 
 // Logo image
 const ymcaLogo = "/logo.png";
 
+// Supported languages
+const SUPPORTED_LANGUAGES = [
+  { code: 'en', name: 'English' },
+  { code: 'es', name: 'Español' },
+  { code: 'fr', name: 'Français' },
+  { code: 'de', name: 'Deutsch' },
+  { code: 'it', name: 'Italiano' },
+  { code: 'pt', name: 'Português' },
+  { code: 'zh', name: '中文' },
+  { code: 'ja', name: '日本語' },
+  { code: 'ko', name: '한국어' },
+  { code: 'ar', name: 'العربية' },
+  { code: 'hi', name: 'हिन्दी' },
+  { code: 'ru', name: 'Русский' }
+];
+
 export default function Home() {
   const router = useRouter();
+  const { t, i18n } = useTranslation();
   const [inputValue, setInputValue] = useState('');
+  const [selectedLanguage, setSelectedLanguage] = useState('en');
+  const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const { sendMessage } = useChat();
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -48,6 +69,25 @@ export default function Home() {
     }
   };
 
+  const handleLanguageChange = (languageCode: string) => {
+    setSelectedLanguage(languageCode);
+    setLanguageDropdownOpen(false);
+    i18n.changeLanguage(languageCode);
+  };
+
+  // Close language dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (languageDropdownOpen && !target.closest('.language-selector')) {
+        setLanguageDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [languageDropdownOpen]);
+
   return (
     <div className={cn("content-stretch flex flex-col items-start relative size-full min-h-screen bg-[#E1F4FA]")}>
       {/* Header */}
@@ -56,16 +96,48 @@ export default function Home() {
           <div className={cn("h-[72px] w-[94.161px] relative shrink-0")}>
             <img alt="YMCA Logo" className="w-full h-full object-contain" src={ymcaLogo} />
           </div>
-          <div className="bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center px-[16px] py-[12px] relative rounded-[12px] shrink-0">
-            <div className="relative shrink-0 size-[20px] text-[#636466]">
-              <Image src="/globeicon.svg" alt="Globe icon" width={20} height={20} />
-            </div>
-            <p className="font-medium leading-[24px] not-italic relative shrink-0 text-[#231f20] text-[16px] text-center text-nowrap">
-              English
-            </p>
-            <div className="relative shrink-0 size-[24px] text-[#636466]">
-              <ChevronDownIcon />
-            </div>
+          <div className="relative language-selector">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setLanguageDropdownOpen(!languageDropdownOpen);
+              }}
+              className="bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center px-[16px] py-[12px] relative rounded-[12px] shrink-0 hover:border-[#0089d0] transition-colors cursor-pointer"
+            >
+              <div className="relative shrink-0 size-[20px] text-[#636466]">
+                <Image src="/globeicon.svg" alt="Globe icon" width={20} height={20} />
+              </div>
+              <p className="font-medium leading-[24px] not-italic relative shrink-0 text-[#231f20] text-[16px] text-center text-nowrap">
+                {SUPPORTED_LANGUAGES.find(lang => lang.code === selectedLanguage)?.name || 'English'}
+              </p>
+              <div className={cn("relative shrink-0 size-[24px] text-[#636466] transition-transform", languageDropdownOpen && "rotate-180")}>
+                <ChevronDownIcon />
+              </div>
+            </button>
+
+            {languageDropdownOpen && (
+              <div className="absolute right-0 top-full mt-[8px] bg-white border border-[#d1d5dc] rounded-[12px] shadow-lg overflow-hidden z-50 min-w-[200px]">
+                {SUPPORTED_LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.code}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleLanguageChange(lang.code);
+                    }}
+                    className={cn(
+                      "w-full text-left px-[16px] py-[12px] hover:bg-[#f9fafb] transition-colors cursor-pointer",
+                      selectedLanguage === lang.code && "bg-[#E1F4FA] text-[#0089d0] font-medium"
+                    )}
+                  >
+                    {lang.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -77,10 +149,10 @@ export default function Home() {
             {/* Heading */}
             <div className={cn("content-stretch flex flex-col gap-[16px] items-center not-italic relative shrink-0 text-center")}>
               <h1 className={cn("font-cachet font-bold leading-normal min-w-full relative shrink-0 text-[#231f20] text-[64px] w-[min-content]")}>
-                Explore the history that shaped today&apos;s YMCA.
+                {t('welcomeTitle')}
               </h1>
               <p className={cn("font-verdana font-normal leading-[1.5] relative shrink-0 text-[#484848] text-[20px] w-[800px] max-w-full")}>
-                Ask questions, discover stories, and draw lessons from the past to inspire leadership today.
+                {t('welcomeSubtitle')}
               </p>
             </div>
 
@@ -101,11 +173,11 @@ export default function Home() {
                           <ShieldIcon />
                         </div>
                         <p className={cn("font-cachet basis-0 font-medium grow leading-[20px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
-                          The YMCA in Times of Crisis
+                          {t('starterCrisisTitle')}
                         </p>
                       </div>
                       <p className={cn("font-verdana font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full")}>
-                        How the Y responded when communities needed it most
+                        {t('starterCrisisDesc')}
                       </p>
                     </div>
                   </button>
@@ -122,11 +194,11 @@ export default function Home() {
                           <SparklesIcon />
                         </div>
                         <p className={cn("font-cachet basis-0 font-medium grow leading-[20px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
-                          Youth Programs Through the Decades
+                          {t('starterYouthTitle')}
                         </p>
                       </div>
                       <p className={cn("font-verdana font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full")}>
-                        How the Y shaped young lives across generations
+                        {t('starterYouthDesc')}
                       </p>
                     </div>
                   </button>
@@ -146,11 +218,11 @@ export default function Home() {
                           <UsersIcon />
                         </div>
                         <p className={cn("font-cachet basis-0 font-medium grow leading-[20px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
-                          Leadership &amp; Social Responsibility
+                          {t('starterLeadershipTitle')}
                         </p>
                       </div>
                       <p className={cn("font-verdana font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full")}>
-                        Stories of courage, change, and moral leadership
+                        {t('starterLeadershipDesc')}
                       </p>
                     </div>
                   </button>
@@ -167,11 +239,11 @@ export default function Home() {
                           <LightbulbIcon />
                         </div>
                         <p className={cn("font-cachet basis-0 font-medium grow leading-[20px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
-                          Innovation and Change at the Y
+                          {t('starterInnovationTitle')}
                         </p>
                       </div>
                       <p className={cn("font-verdana font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full")}>
-                        From basketball to new models of community service
+                        {t('starterInnovationDesc')}
                       </p>
                     </div>
                   </button>
@@ -189,7 +261,7 @@ export default function Home() {
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask your own question about YMCA history, programs, or leadership…"
+                  placeholder={t('inputPlaceholder')}
                   className={cn("basis-0 font-normal grow leading-[24px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[16px] bg-transparent border-none outline-none placeholder:text-[#757575]")}
                 />
                 <button
