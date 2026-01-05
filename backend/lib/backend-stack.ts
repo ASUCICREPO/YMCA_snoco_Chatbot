@@ -507,33 +507,29 @@ export class YmcaAiStack extends cdk.Stack {
         secretStringValue: cdk.SecretValue.unsafePlainText(githubToken),
       });
 
+      // Create service role for Amplify with DynamoDB permissions
+      const amplifyServiceRole = new iam.Role(this, 'AmplifyServiceRole', {
+        assumedBy: new iam.ServicePrincipal('amplify.amazonaws.com'),
+        description: 'Service role for Amplify app with DynamoDB access',
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess-Amplify'),
+        ],
+      });
+
+      // Grant DynamoDB permissions to Amplify service role
+      conversationTable.grantReadData(amplifyServiceRole);
+      analyticsTable.grantReadData(amplifyServiceRole);
+
       const amplifyApp = new amplifyAlpha.App(this, 'YmcaAmplifyAppV2', {
         sourceCodeProvider: new amplifyAlpha.GitHubSourceCodeProvider({
           owner: githubOwner,
           repository: githubRepo,
           oauthToken: githubTokenSecret.secretValue,
         }),
-        buildSpec: codebuild.BuildSpec.fromObjectToYaml({
-          version: '1.0',
-          frontend: {
-            appRoot: 'frontend',
-            phases: {
-              preBuild: {
-                commands: ['npm install --force'],
-              },
-              build: {
-                commands: ['npm run build'],
-              },
-            },
-            artifacts: {
-              baseDirectory: '.next',
-              files: ['**/*'],
-            },
-            cache: {
-              paths: ['node_modules/**/*'],
-            },
-          },
-        }),
+        platform: amplifyAlpha.Platform.WEB_COMPUTE,
+        role: amplifyServiceRole,
+        // Let Amplify auto-detect Next.js for WEB_COMPUTE
+        // No custom buildSpec needed
       });
 
       const mainBranch = amplifyApp.addBranch('main', {
@@ -548,6 +544,9 @@ export class YmcaAiStack extends cdk.Stack {
       mainBranch.addEnvironment('NEXT_PUBLIC_USER_POOL_ID', userPool.userPoolId);
       mainBranch.addEnvironment('NEXT_PUBLIC_USER_POOL_CLIENT_ID', userPoolClient.userPoolClientId);
       mainBranch.addEnvironment('NEXT_PUBLIC_REGION', this.region);
+      mainBranch.addEnvironment('NEXT_PUBLIC_AWS_REGION', this.region);
+      mainBranch.addEnvironment('NEXT_PUBLIC_ANALYTICS_TABLE_NAME', analyticsTable.tableName);
+      mainBranch.addEnvironment('NEXT_PUBLIC_CONVERSATION_TABLE_NAME', conversationTable.tableName);
 
       githubTokenSecret.grantRead(amplifyApp);
 
