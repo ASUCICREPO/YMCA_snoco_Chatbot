@@ -51,38 +51,36 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
 
   // Typing effect for streaming messages
   useEffect(() => {
-    // Safety check for message content
-    const response = message.content as ChatResponse;
-    const narrative = response?.response?.story?.narrative || '';
+    if (message.isStreaming && message.role === 'assistant') {
+      const response = message.content as ChatResponse;
+      const narrative = response.response?.story?.narrative || '';
 
-    // If not streaming or not assistant or fully displayed, ensure full text is shown
-    if (!message.isStreaming || message.role !== 'assistant') {
-      if (displayedText !== narrative) {
-        setDisplayedText(narrative);
+      if (narrative && narrative !== displayedText) {
+        setIsTyping(true);
+        let currentIndex = displayedText.length;
+
+        const typeNextChar = () => {
+          if (currentIndex < narrative.length) {
+            setDisplayedText(narrative.substring(0, currentIndex + 1));
+            currentIndex++;
+            // Vary typing speed for more natural feel
+            const delay = Math.random() * 30 + 10;
+            setTimeout(typeNextChar, delay);
+          } else {
+            setIsTyping(false);
+          }
+        };
+
+        typeNextChar();
       }
+    } else if (!message.isStreaming) {
+      // For non-streaming messages, show full text immediately
+      const response = message.content as ChatResponse;
+      const narrative = response.response?.story?.narrative || '';
+      setDisplayedText(narrative);
       setIsTyping(false);
-      return;
     }
-
-    // If message is streaming:
-    // Check if we are caught up
-    if (displayedText === narrative) {
-      setIsTyping(false);
-      return;
-    }
-
-    // We are behind. Type the next character.
-    setIsTyping(true);
-    const delay = Math.random() * 20 + 10; // slightly faster typing
-
-    // Use a timeout to schedule the next character update
-    // This breaks the synchronous loop and prevents "Maximum update depth exceeded"
-    const timeoutId = setTimeout(() => {
-      setDisplayedText(narrative.substring(0, displayedText.length + 1));
-    }, delay);
-
-    return () => clearTimeout(timeoutId);
-  }, [message.content, message.isStreaming, displayedText, message.role]);
+  }, [message.content, message.isStreaming, displayedText]);
 
   if (message.role === 'user') {
     return (
@@ -322,9 +320,9 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
                   <button
                     key={index}
                     onClick={() => onSuggestionClick?.(suggestion)}
-                    className={cn("bg-[rgba(0,137,208,0.1)] border border-[rgba(0,137,208,0.3)] border-solid flex gap-[8px] items-center px-[21px] py-[12px] relative rounded-[20px] hover:bg-[rgba(0,137,208,0.2)] transition-colors cursor-pointer h-auto max-w-full")}
+                    className={cn("bg-[rgba(0,137,208,0.1)] border border-[rgba(0,137,208,0.3)] border-solid content-stretch flex gap-[8px] items-center px-[21px] py-[12px] relative rounded-[100px] shrink-0 hover:bg-[rgba(0,137,208,0.2)] transition-colors cursor-pointer")}
                   >
-                    <p className="font-normal leading-[20px] not-italic text-[#231f20] text-[14px] text-left break-words whitespace-normal w-full">
+                    <p className="font-normal leading-[20px] not-italic text-[#231f20] text-[14px]">
                       {suggestion}
                     </p>
                   </button>

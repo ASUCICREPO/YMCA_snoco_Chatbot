@@ -15,8 +15,8 @@ export const metadata: Metadata = {
   description: "Ask questions, discover stories, and draw lessons from the past to inspire leadership today.",
 };
 
-import ConfigureAmplify from '@/components/ConfigureAmplify';
 import { ChatProvider } from './context/ChatContext';
+import ConfigureAmplify from '../components/ConfigureAmplify';
 
 export default function RootLayout({
   children,
@@ -26,7 +26,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        suppressHydrationWarning
         className={`${montserrat.variable} font-verdana antialiased`}
         style={{
           fontFamily: 'Verdana, Geneva, sans-serif'

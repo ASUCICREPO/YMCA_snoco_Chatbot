@@ -6,11 +6,16 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as amplify from 'aws-cdk-lib/aws-amplify';
 import * as stepfunctions from 'aws-cdk-lib/aws-stepfunctions';
 import * as stepfunctionsTasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as s3Notifications from 'aws-cdk-lib/aws-s3-notifications';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as amplifyAlpha from '@aws-cdk/aws-amplify-alpha';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import { AwsCustomResource, AwsCustomResourcePolicy, PhysicalResourceId } from 'aws-cdk-lib/custom-resources';
 
 // Load environment variables from backend/.env
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -483,6 +488,103 @@ export class YmcaAiStack extends cdk.Stack {
       description: 'Cognito User Pool Client ID',
     });
 
+
+    // ========================================================================
+    // AMPLIFY FRONTEND DEPLOYMENT
+    // ========================================================================
+
+    const githubToken = process.env.GITHUB_TOKEN;
+    const githubOwner = process.env.GITHUB_OWNER;
+    const githubRepo = process.env.GITHUB_REPO;
+    // Optional: Only throw if you intend to deploy Amplify. 
+    // For now, we'll check if they are present before creating Amplify resources.
+    
+    if (githubToken && githubOwner && githubRepo) {
+      const githubTokenSecret = new secretsmanager.Secret(this, 'GitHubToken', {
+        secretName: 'github-secret-token-ymca',
+        description: 'GitHub Personal Access Token for Amplify',
+        secretStringValue: cdk.SecretValue.unsafePlainText(githubToken),
+      });
+
+      const amplifyApp = new amplifyAlpha.App(this, 'YmcaAmplifyApp', {
+        sourceCodeProvider: new amplifyAlpha.GitHubSourceCodeProvider({
+          owner: githubOwner,
+          repository: githubRepo,
+          oauthToken: githubTokenSecret.secretValue,
+        }),
+        buildSpec: codebuild.BuildSpec.fromObjectToYaml({
+          version: '1.0',
+          frontend: {
+            phases: {
+              preBuild: {
+                commands: ['cd frontend', 'npm ci'],
+              },
+              build: {
+                commands: ['cd frontend', 'npm run build'],
+              },
+            },
+            artifacts: {
+              baseDirectory: 'frontend/.next', 
+              files: ['**/*'],
+            },
+            cache: {
+              paths: ['frontend/node_modules/**/*'],
+            },
+          },
+        }),
+      });
+
+      const mainBranch = amplifyApp.addBranch('main', {
+        autoBuild: true,
+        stage: 'PRODUCTION',
+      });
+
+      // Inject Environment Variables into Amplify
+      mainBranch.addEnvironment('NEXT_PUBLIC_API_URL', api.url);
+      mainBranch.addEnvironment('NEXT_PUBLIC_CHAT_ENDPOINT', `${api.url}chat`);
+      mainBranch.addEnvironment('NEXT_PUBLIC_CHAT_STREAM_ENDPOINT', streamingFunctionUrl.url); // Preferred over API GW for streaming
+      mainBranch.addEnvironment('NEXT_PUBLIC_USER_POOL_ID', userPool.userPoolId);
+      mainBranch.addEnvironment('NEXT_PUBLIC_USER_POOL_CLIENT_ID', userPoolClient.userPoolClientId);
+      mainBranch.addEnvironment('NEXT_PUBLIC_REGION', this.region);
+
+      githubTokenSecret.grantRead(amplifyApp);
+
+      // Trigger build on deployment
+      new AwsCustomResource(this, 'TriggerAmplifyBuild', {
+        onCreate: {
+          service: 'Amplify',
+          action: 'startJob',
+          parameters: {
+            appId: amplifyApp.appId,
+            branchName: mainBranch.branchName,
+            jobType: 'RELEASE',
+          },
+          physicalResourceId: PhysicalResourceId.of(`${amplifyApp.appId}-${mainBranch.branchName}-${Date.now()}`),
+        },
+        onUpdate: {
+          service: 'Amplify',
+          action: 'startJob',
+          parameters: {
+            appId: amplifyApp.appId,
+            branchName: mainBranch.branchName,
+            jobType: 'RELEASE',
+          },
+          physicalResourceId: PhysicalResourceId.of(`${amplifyApp.appId}-${mainBranch.branchName}-${Date.now()}`),
+        },
+        policy: AwsCustomResourcePolicy.fromSdkCalls({
+          resources: [
+            `arn:aws:amplify:${this.region}:${this.account}:apps/${amplifyApp.appId}`,
+            `arn:aws:amplify:${this.region}:${this.account}:apps/${amplifyApp.appId}/branches/${mainBranch.branchName}/jobs/*`,
+          ],
+        }),
+      });
+
+      new cdk.CfnOutput(this, 'AmplifyAppUrl', {
+        value: `https://main.${amplifyApp.defaultDomain}`,
+        description: 'Amplify App URL',
+      });
+    }
+
     new cdk.CfnOutput(this, 'PostDeploymentInstructions', {
       value: `
 NEXT STEPS:
@@ -497,6 +599,10 @@ NEXT STEPS:
    - Create a new user (email/password)
    - Mark email as verified
    - This user will be able to access the Admin Dashboard
+
+3. GitHub Configuration (for Amplify):
+   - Ensure GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO are set in backend/.env
+   - GITHUB_TOKEN must be a Personal Access Token with 'repo' and 'admin:repo_hook' scopes
       `,
       description: 'Post-deployment setup instructions',
     });
