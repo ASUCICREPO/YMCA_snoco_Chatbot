@@ -506,7 +506,7 @@ export class YmcaAiStack extends cdk.Stack {
         secretStringValue: cdk.SecretValue.unsafePlainText(githubToken),
       });
 
-      const amplifyApp = new amplifyAlpha.App(this, 'YmcaAmplifyApp', {
+      const amplifyApp = new amplifyAlpha.App(this, 'YmcaAmplifyAppV2', {
         sourceCodeProvider: new amplifyAlpha.GitHubSourceCodeProvider({
           owner: githubOwner,
           repository: githubRepo,
