@@ -74,16 +74,58 @@ exports.handler = async (event) => {
 
     console.log(`Processed content saved to: ${outputKey}`);
 
+    // Extract year and metadata from filename for Bedrock KB filtering
+    const yearMatch = objectKey.match(/(\d{4})/);
+    const documentYear = yearMatch ? yearMatch[1] : 'unknown';
+    const documentDecade = yearMatch ? `${yearMatch[1].substring(0, 3)}0s` : 'unknown';
+
+    // Determine era based on year
+    let era = 'unknown';
+    if (yearMatch) {
+      const year = parseInt(yearMatch[1]);
+      if (year < 1900) era = 'founding';
+      else if (year < 1950) era = 'early-20th-century';
+      else if (year < 1980) era = 'mid-20th-century';
+      else era = 'modern';
+    }
+
+    // Create separate metadata file for Bedrock KB filtering
+    // Following AWS best practice: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-metadata.html
+    const metadataKey = `${outputKey}.metadata.json`;
+    const bedrockMetadata = {
+      metadataAttributes: {
+        year: documentYear,
+        decade: documentDecade,
+        era: era,
+        documentType: 'historical-archive',
+        pageCount: processedContent.pageCount,
+        wordCount: processedContent.wordCount,
+        sourceFile: objectKey.split('/').pop()
+      }
+    };
+
+    await s3Client.send(new PutObjectCommand({
+      Bucket: process.env.DOCUMENTS_BUCKET,
+      Key: metadataKey,
+      Body: JSON.stringify(bedrockMetadata, null, 2),
+      ContentType: 'application/json'
+    }));
+
+    console.log(`Metadata file saved to: ${metadataKey}`);
+    console.log(`Document metadata: ${JSON.stringify(bedrockMetadata.metadataAttributes)}`);
+
     return {
       statusCode: 200,
       message: 'Text extraction and processing completed successfully',
       outputKey,
+      metadataKey,
       processingId,
       textLength: processedContent.text.length,
       pageCount: processedContent.pageCount,
       originalDocument: objectKey,
       structuredDataFound: processedContent.hasStructuredData,
-      totalBlocks: allBlocks.length
+      totalBlocks: allBlocks.length,
+      metadata: bedrockMetadata.metadataAttributes
     };
   } catch (error) {
     console.error('Error processing Textract results:', error);

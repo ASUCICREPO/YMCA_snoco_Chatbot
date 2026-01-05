@@ -1,11 +1,10 @@
 const { BedrockAgentRuntimeClient, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
-const { BedrockRuntimeClient, InvokeModelCommand, InvokeModelWithResponseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { TranslateClient, TranslateTextCommand } = require('@aws-sdk/client-translate');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { S3Client, GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const { Writable } = require('stream');
 
 // Initialize AWS clients
 const bedrockAgentClient = new BedrockAgentRuntimeClient({ region: process.env.REGION || 'us-west-2' });
@@ -18,6 +17,7 @@ const s3Client = new S3Client({ region: process.env.REGION || 'us-west-2' });
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID;
 const CONVERSATION_TABLE = process.env.CONVERSATION_TABLE_NAME;
 const ANALYTICS_TABLE = process.env.ANALYTICS_TABLE_NAME;
+const DOCUMENTS_BUCKET = process.env.DOCUMENTS_BUCKET;
 
 // Supported languages for YMCA multilingual support
 const SUPPORTED_LANGUAGES = {
@@ -35,513 +35,528 @@ const SUPPORTED_LANGUAGES = {
   'ru': 'Russian'
 };
 
-// Main handler logic (shared between streaming and non-streaming)
-async function handleRequest(event, responseStream = null) {
-  console.log('YMCA AI Agent Proxy - Event:', JSON.stringify(event, null, 2));
+// ============================================================================
+// CORE PROCESSING FUNCTIONS (Shared Logic)
+// ============================================================================
 
-  try {
-    // Parse request body
-    const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const {
-      message,
-      conversationId,
-      language = 'auto',
-      sessionId = generateSessionId(),
-      userId = 'anonymous'
-    } = body;
+/**
+ * Translate text to English for better RAG performance
+ */
+async function translateToEnglish(message, language) {
+  let detectedLanguage = language === 'auto' ? 'en' : language;
+  let originalLanguage = language === 'auto' ? 'en' : language;
+  let queryInEnglish = message;
 
-    if (!message) {
-      if (responseStream) {
-        const errorResponse = createResponse(400, { error: 'Message is required' });
-        responseStream.write(JSON.stringify(errorResponse));
-        responseStream.end();
-        return;
-      }
-      return createResponse(400, { error: 'Message is required' });
-    }
-
-    // Generate unique query ID for analytics
-    const queryId = generateQueryId();
-    const timestamp = Date.now();
-
-    // Step 1: Initialize language variables (detection happens during translation)
-    let detectedLanguage = language === 'auto' ? 'en' : language;
-    let originalLanguage = language === 'auto' ? 'en' : language;
-
-    // Step 2: Translate query to English if needed (for better RAG performance)
-    let queryInEnglish = message;
-    if (language === 'auto' || detectedLanguage !== 'en') {
-      try {
-        const translateCommand = new TranslateTextCommand({
-          Text: message,
-          SourceLanguageCode: language === 'auto' ? 'auto' : detectedLanguage,
-          TargetLanguageCode: 'en'
-        });
-        const translateResult = await translateClient.send(translateCommand);
-        queryInEnglish = translateResult.TranslatedText;
-
-        // Extract detected language from auto-detection
-        if (language === 'auto' && translateResult.SourceLanguageCode) {
-          detectedLanguage = translateResult.SourceLanguageCode;
-          originalLanguage = translateResult.SourceLanguageCode;
-          console.log(`Auto-detected language: ${detectedLanguage}`);
-        }
-
-        console.log(`Translated query to English: ${queryInEnglish}`);
-      } catch (error) {
-        console.warn('Translation to English failed, using original query:', error);
-      }
-    }
-
-    // Step 3: Retrieve relevant context from Knowledge Base
-    const ragStartTime = Date.now();
-    let ragResponse;
-    let citations = [];
-    let retrievedContext = '';
-
+  if (language === 'auto' || detectedLanguage !== 'en') {
     try {
-      // First, retrieve relevant chunks from Knowledge Base
-      const retrieveCommand = new RetrieveCommand({
-        knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        retrievalQuery: {
-          text: queryInEnglish
-        },
-        retrievalConfiguration: {
-          vectorSearchConfiguration: {
-            numberOfResults: 10 // Get more context for rich storytelling
-            // Using default SEMANTIC search (HYBRID not supported with S3_VECTORS)
-          }
-        }
+      const translateCommand = new TranslateTextCommand({
+        Text: message,
+        SourceLanguageCode: language === 'auto' ? 'auto' : detectedLanguage,
+        TargetLanguageCode: 'en'
       });
+      const translateResult = await translateClient.send(translateCommand);
+      queryInEnglish = translateResult.TranslatedText;
 
-      const retrieveResult = await bedrockAgentClient.send(retrieveCommand);
-
-      // Process retrieved chunks and build context
-      if (retrieveResult.retrievalResults && retrieveResult.retrievalResults.length > 0) {
-        // Extract citations with proper metadata and generate pre-signed URLs
-        citations = await Promise.all(retrieveResult.retrievalResults.map(async (result, index) => {
-          const s3Uri = result.location?.s3Location?.uri || '';
-
-          // Extract original PDF filename from the processed JSON path
-          // Example: s3://bucket/output/processed-text/doc-123/1981.pdf.json -> 1981.pdf
-          let pdfFilename = 'Document';
-          let pdfUrl = null;
-
-          if (s3Uri) {
-            const match = s3Uri.match(/\/([^/]+)\.pdf\.json$/);
-            if (match) {
-              pdfFilename = match[1] + '.pdf';
-
-              // Generate pre-signed URL for the original PDF in input/ directory
-              try {
-                const bucket = process.env.DOCUMENTS_BUCKET;
-                const key = `input/${pdfFilename}`;
-
-                // Try to retrieve original filename from metadata (for obfuscated files)
-                let displayFilename = pdfFilename;
-                try {
-                  const headCommand = new HeadObjectCommand({ Bucket: bucket, Key: key });
-                  const metadata = await s3Client.send(headCommand);
-                  if (metadata.Metadata && (metadata.Metadata['original-name'] || metadata.Metadata['x-amz-meta-original-name'])) {
-                    displayFilename = metadata.Metadata['original-name'] || metadata.Metadata['x-amz-meta-original-name'];
-                  }
-                } catch (headError) {
-                  // Ignore if metadata fetch fails
-                }
-
-                const command = new GetObjectCommand({
-                  Bucket: bucket,
-                  Key: key,
-                  ResponseContentDisposition: `inline; filename="${displayFilename}"`
-                });
-
-                pdfUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 }); // 1 minute (LOWEST expiry for security)
-                pdfFilename = displayFilename; // Update title
-              } catch (error) {
-                console.warn(`Failed to generate pre-signed URL for ${pdfFilename}:`, error);
-              }
-            }
-          }
-
-          return {
-            id: `source-${index + 1}`,
-            title: pdfFilename,
-            source: `YMCA Historical Archives`,
-            sourceUrl: pdfUrl,
-            confidence: result.score || 0.8,
-            excerpt: result.content?.text?.substring(0, 300) + '...' || '',
-            fullText: result.content?.text || ''
-          };
-        }));
-
-        // Build rich context from retrieved chunks
-        retrievedContext = retrieveResult.retrievalResults
-          .map((result, index) => `[Source ${index + 1}]: ${result.content?.text || ''}`)
-          .join('\n\n');
-
-        console.log(`Retrieved ${retrieveResult.retrievalResults.length} relevant chunks`);
+      if (language === 'auto' && translateResult.SourceLanguageCode) {
+        detectedLanguage = translateResult.SourceLanguageCode;
+        originalLanguage = translateResult.SourceLanguageCode;
+        console.log(`Auto-detected language: ${detectedLanguage}`);
       }
 
-      // Step 4: Generate response using retrieved context with enhanced prompting
-      const enhancedPrompt = `You are a knowledgeable YMCA historian and storyteller with deep expertise in YMCA history, programs, and community impact. Your role is to transform archival materials into engaging, accessible narratives that inspire present-day reflection and decision-making.
+      console.log(`Translated query to English: ${queryInEnglish}`);
+    } catch (error) {
+      console.warn('Translation to English failed, using original query:', error);
+    }
+  }
 
-RETRIEVED CONTEXT FROM YMCA ARCHIVES:
-${retrievedContext}
-
-USER QUESTION: ${queryInEnglish}
-
-RESPONSE REQUIREMENTS:
-1. **STORYTELLING APPROACH**: Don't just answer - tell a compelling story that brings history to life
-2. **USE THE CONTEXT**: Base your response primarily on the retrieved archival materials above
-3. **NARRATIVE STRUCTURE**: Create an engaging story with clear flow
-4. **HISTORICAL CONTEXT**: Provide rich background and connect events to broader themes
-5. **HUMAN ELEMENTS**: Include specific people, dates, locations, and personal stories from the context
-6. **MODERN RELEVANCE**: Connect historical insights to present-day YMCA work and community needs
-7. **CITE SOURCES**: Reference the source numbers [Source 1], [Source 2], etc. in your narrative
-8. **CONVERSATION STARTERS**: Generate 3 engaging questions that help users explore related topics, compare to today, or dig deeper into specific aspects
-
-RESPONSE FORMAT (JSON):
-{
-  "story": {
-    "title": "Engaging title that captures the essence of the historical moment",
-    "narrative": "Rich, multi-paragraph storytelling response that weaves together information from the sources. Include specific dates, names, places, and events. Reference sources like [Source 1] naturally within the narrative.",
-    "timeline": "Key dates and periods mentioned in the sources",
-    "locations": "Specific places mentioned in the retrieved context",
-    "keyPeople": "Important individuals and their roles as mentioned in the sources",
-    "whyItMatters": "Modern relevance and lessons for today's YMCA work"
-  },
-  "lessonsAndThemes": [
-    "Key insight or lesson drawn from the historical evidence",
-    "Another important theme or pattern from the sources"
-  ],
-  "modernReflection": "How this historical moment teaches us about today's challenges and opportunities in YMCA work",
-  "exploreFurther": [
-    "How does this compare to today?",
-    "What other [related topic] did the YMCA respond to?",
-    "Tell me about YMCA [related aspect from the story]"
-  ]
+  return { queryInEnglish, detectedLanguage, originalLanguage };
 }
 
-TONE: Engaging, authoritative, and inspiring. Write as if you're a passionate historian sharing fascinating discoveries from newly uncovered archives. Use vivid language and specific details from the sources to make history come alive.
-
-IMPORTANT: 
-- If the retrieved context doesn't contain enough information, acknowledge this honestly
-- Always ground your response in the actual retrieved sources
-- Don't invent facts not present in the context
-- If sources conflict, acknowledge different perspectives`;
-
-      // Use streaming for real-time response
-      const streamCommand = new InvokeModelWithResponseStreamCommand({
-        modelId: 'us.amazon.nova-pro-v1:0',
-        body: JSON.stringify({
-          messages: [{
-            role: 'user',
-            content: [{ text: enhancedPrompt }] // Nova format: just text, no type field
-          }],
-          inferenceConfig: {
-            maxTokens: 3000,
-            temperature: 0.7
-          }
-        })
-      });
-
-      const streamResult = await bedrockRuntimeClient.send(streamCommand);
-      let generatedText = '';
-
-      // Process stream chunks - Amazon Nova streaming format
-      for await (const chunk of streamResult.body) {
-        if (chunk.chunk?.bytes) {
-          const chunkText = new TextDecoder().decode(chunk.chunk.bytes);
-          try {
-            const chunkJson = JSON.parse(chunkText);
-            console.log('Stream chunk type:', Object.keys(chunkJson));
-
-            // Handle Nova contentBlockDelta events (text chunks)
-            if (chunkJson.contentBlockDelta?.delta?.text) {
-              const textChunk = chunkJson.contentBlockDelta.delta.text;
-              generatedText += textChunk;
-
-              // Stream chunk to client if responseStream is available (raw text, not JSON-wrapped)
-              if (responseStream) {
-                responseStream.write(textChunk);
-              }
-            }
-            // Handle other Nova event types if needed
-            else if (chunkJson.messageStart) {
-              console.log('Message started');
-            }
-            else if (chunkJson.messageStop) {
-              console.log('Message stopped, stop reason:', chunkJson.messageStop.stopReason);
-            }
-          } catch (parseError) {
-            console.warn('Failed to parse chunk:', chunkText, parseError);
-          }
-        }
+/**
+ * Retrieve and process context from Knowledge Base with diversity enforcement
+ */
+async function retrieveKnowledgeBaseContext(queryInEnglish) {
+  const retrieveCommand = new RetrieveCommand({
+    knowledgeBaseId: KNOWLEDGE_BASE_ID,
+    retrievalQuery: { text: queryInEnglish },
+    retrievalConfiguration: {
+      vectorSearchConfiguration: {
+        numberOfResults: 50 // Request more to ensure diversity
       }
+    }
+  });
 
-      // Try to parse as JSON first, fallback to structured text if needed
-      try {
-        const jsonResponse = JSON.parse(generatedText);
-        ragResponse = {
-          type: 'structured',
-          content: jsonResponse,
-          rawText: generatedText
-        };
-      } catch (parseError) {
-        console.warn('Response not in JSON format, structuring as narrative');
-        ragResponse = {
-          type: 'narrative',
-          content: {
-            story: {
-              title: "YMCA Historical Insights",
-              narrative: generatedText,
-              timeline: "Historical period covered in sources",
-              locations: "Various YMCA locations",
-              keyPeople: "YMCA leaders and community members",
-              whyItMatters: "Understanding our heritage helps guide our future mission"
-            },
-            lessonsAndThemes: ["Historical continuity in YMCA's mission", "Community resilience and adaptation"],
-            modernReflection: "These historical insights remind us of the YMCA's enduring commitment to community service.",
-            exploreFurther: [
-              "What other historical periods would you like to explore?",
-              "How did the YMCA adapt to other major challenges?",
-              "Tell me about YMCA community programs today"
-            ]
-          },
-          rawText: generatedText
-        };
+  const retrieveResult = await bedrockAgentClient.send(retrieveCommand);
+
+  if (!retrieveResult.retrievalResults || retrieveResult.retrievalResults.length === 0) {
+    return { citations: [], retrievedContext: '' };
+  }
+
+  // Group results by document with chunk details
+  const documentGroups = {};
+
+  for (const result of retrieveResult.retrievalResults) {
+    const s3Uri = result.location?.s3Location?.uri || '';
+    let pdfFilename = 'Document';
+
+    if (s3Uri) {
+      const match = s3Uri.match(/\/([^/]+)\.pdf\.json$/);
+      if (match) {
+        pdfFilename = match[1] + '.pdf';
       }
+    }
 
-      console.log('RAG response generated successfully using Retrieve API');
-      console.log('Citations processed:', citations.length);
-
-    } catch (error) {
-      console.error('RAG query failed:', error);
-
-      // Simple error response
-      ragResponse = {
-        type: 'error',
-        content: {
-          story: {
-            title: "Unable to Access Archives",
-            narrative: "I'm currently unable to access the YMCA historical archives. Please try again in a moment or contact your local YMCA for historical information.",
-            whyItMatters: "Your questions about YMCA history deserve proper attention from our archives."
-          },
-          exploreFurther: [
-            "Try asking your question again",
-            "Tell me about YMCA programs in the 1900s",
-            "What was the YMCA's role in community development?"
-          ]
-        },
-        rawText: "Knowledge Base temporarily unavailable"
+    if (!documentGroups[pdfFilename]) {
+      documentGroups[pdfFilename] = {
+        title: pdfFilename,
+        s3Uri: s3Uri,
+        chunks: [],
+        scores: [],
+        maxScore: 0
       };
     }
 
-    const ragEndTime = Date.now();
-
-    // Step 4: Translate response back to original language if needed
-    let finalResponse = ragResponse;
-    if (originalLanguage !== 'en' && SUPPORTED_LANGUAGES[originalLanguage]) {
-      try {
-        // For structured responses, translate ALL text fields
-        if (ragResponse.type === 'structured' || ragResponse.type === 'narrative') {
-          const content = ragResponse.content;
-
-          // Collect all text to translate
-          const textsToTranslate = [
-            content.story?.title || '',
-            content.story?.narrative || '',
-            content.story?.timeline || '',
-            content.story?.locations || '',
-            content.story?.keyPeople || '',
-            content.story?.whyItMatters || '',
-            ...(content.lessonsAndThemes || []),
-            content.modernReflection || '',
-            ...(content.exploreFurther || [])
-          ].filter(text => text && text.length > 0);
-
-          // Translate all texts in batch
-          const translatedTexts = [];
-          for (const text of textsToTranslate) {
-            const translateCmd = new TranslateTextCommand({
-              Text: text,
-              SourceLanguageCode: 'en',
-              TargetLanguageCode: originalLanguage
-            });
-            const result = await translateClient.send(translateCmd);
-            translatedTexts.push(result.TranslatedText);
-          }
-
-          // Reconstruct response with translated texts
-          let textIndex = 0;
-          finalResponse = {
-            ...ragResponse,
-            content: {
-              ...content,
-              story: {
-                title: translatedTexts[textIndex++],
-                narrative: translatedTexts[textIndex++],
-                timeline: translatedTexts[textIndex++],
-                locations: translatedTexts[textIndex++],
-                keyPeople: translatedTexts[textIndex++],
-                whyItMatters: translatedTexts[textIndex++]
-              },
-              lessonsAndThemes: (content.lessonsAndThemes || []).map(() => translatedTexts[textIndex++]),
-              modernReflection: translatedTexts[textIndex++],
-              exploreFurther: (content.exploreFurther || []).map(() => translatedTexts[textIndex++]),
-              citedSources: content.citedSources || []
-            }
-          };
-        }
-        console.log(`Translated response to ${originalLanguage}`);
-      } catch (error) {
-        console.warn('Translation of response failed, returning English response:', error);
-      }
+    documentGroups[pdfFilename].chunks.push({
+      text: result.content?.text || '',
+      score: result.score || 0
+    });
+    documentGroups[pdfFilename].scores.push(result.score || 0);
+    if ((result.score || 0) > documentGroups[pdfFilename].maxScore) {
+      documentGroups[pdfFilename].maxScore = result.score || 0;
     }
+  }
 
-    // Step 5: Store conversation in DynamoDB with enhanced metadata
-    try {
-      await dynamoClient.send(new PutCommand({
-        TableName: CONVERSATION_TABLE,
-        Item: {
-          conversationId: conversationId || sessionId,
-          timestamp: timestamp,
-          userId: userId,
-          sessionId: sessionId,
-          userMessage: message,
-          userLanguage: originalLanguage,
-          translatedQuery: queryInEnglish,
-          aiResponse: finalResponse.content,
-          aiResponseType: finalResponse.type,
-          originalResponse: ragResponse.rawText,
-          responseLanguage: originalLanguage,
-          processingTimeMs: ragEndTime - ragStartTime,
-          citationsCount: citations.length,
-          sources: citations
-        }
-      }));
-    } catch (error) {
-      console.error('Failed to store conversation:', error);
-    }
+  // DIVERSITY ENFORCEMENT: Limit chunks per document to encourage multi-source synthesis
+  const MAX_CHUNKS_PER_DOC = 10; // Max chunks from any single document
+  const uniqueDocuments = {};
 
-    // Step 6: Store enhanced analytics
-    try {
-      await dynamoClient.send(new PutCommand({
-        TableName: ANALYTICS_TABLE,
-        Item: {
-          queryId: queryId,
-          timestamp: timestamp,
-          userId: userId,
-          sessionId: sessionId,
-          conversationId: conversationId || sessionId,
-          language: originalLanguage,
-          queryLength: message.length,
-          responseLength: JSON.stringify(finalResponse.content).length,
-          processingTimeMs: ragEndTime - ragStartTime,
-          translationUsed: originalLanguage !== 'en',
-          knowledgeBaseUsed: true,
-          citationsFound: citations.length,
-          responseType: finalResponse.type,
-          fallbackUsed: finalResponse.fallback || false,
-          success: true
-        }
-      }));
-    } catch (error) {
-      console.error('Failed to store analytics:', error);
-    }
+  for (const [filename, doc] of Object.entries(documentGroups)) {
+    // Sort chunks by score and take top N
+    const sortedChunks = doc.chunks
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_CHUNKS_PER_DOC);
 
-    // Return enhanced response with storytelling format
-    const responseData = {
-      response: finalResponse.content,
-      responseType: finalResponse.type,
-      rawResponse: finalResponse.rawText,
-      sources: citations,
-      conversationId: conversationId || sessionId,
-      sessionId: sessionId,
-      language: originalLanguage,
-      processingTime: ragEndTime - ragStartTime,
-      translationUsed: originalLanguage !== 'en',
-      timestamp: new Date(timestamp).toISOString(),
-      metadata: {
-        knowledgeBaseUsed: true,
-        citationsFound: citations.length,
-        responseStructured: finalResponse.type === 'structured',
-        fallbackUsed: finalResponse.fallback || false
-      }
+    uniqueDocuments[filename] = {
+      title: doc.title,
+      s3Uri: doc.s3Uri,
+      chunks: sortedChunks.map(c => c.text),
+      maxScore: doc.maxScore,
+      avgScore: doc.scores.reduce((a, b) => a + b, 0) / doc.scores.length,
+      chunkCount: sortedChunks.length
     };
+  }
 
-    // If streaming, send delimiter and final metadata, then close stream
-    if (responseStream) {
-      // Send delimiter to separate streaming content from metadata
-      responseStream.write('\n\n---METADATA---\n');
-      // Send final metadata as JSON
-      responseStream.write(JSON.stringify(responseData));
-      responseStream.end();
-      return;
-    }
+  console.log(`Retrieved from ${Object.keys(documentGroups).length} documents:`,
+    Object.entries(uniqueDocuments).map(([name, doc]) => `${name}(${doc.chunkCount})`).join(', '));
 
-    return createResponse(200, responseData);
+  // Generate citations with pre-signed URLs
+  const docKeys = Object.keys(uniqueDocuments);
+  const citations = await Promise.all(docKeys.map(async (filename, index) => {
+    const doc = uniqueDocuments[filename];
+    let pdfUrl = null;
+    let displayFilename = filename;
 
-  } catch (error) {
-    console.error('Handler error:', error);
+    if (doc.s3Uri) {
+      try {
+        const key = `input/${filename}`;
 
-    // Store error analytics
-    try {
-      await dynamoClient.send(new PutCommand({
-        TableName: ANALYTICS_TABLE,
-        Item: {
-          queryId: generateQueryId(),
-          timestamp: Date.now(),
-          userId: 'unknown',
-          error: error.message,
-          success: false
+        // Try to retrieve original filename from metadata
+        try {
+          const headCommand = new HeadObjectCommand({ Bucket: DOCUMENTS_BUCKET, Key: key });
+          const metadata = await s3Client.send(headCommand);
+          if (metadata.Metadata && (metadata.Metadata['original-name'] || metadata.Metadata['x-amz-meta-original-name'])) {
+            displayFilename = metadata.Metadata['original-name'] || metadata.Metadata['x-amz-meta-original-name'];
+          }
+        } catch (headError) {
+          // Ignore metadata errors
         }
-      }));
-    } catch (analyticsError) {
-      console.error('Failed to store error analytics:', analyticsError);
+
+        const command = new GetObjectCommand({
+          Bucket: DOCUMENTS_BUCKET,
+          Key: key,
+          ResponseContentDisposition: `inline; filename="${displayFilename}"`
+        });
+
+        pdfUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+      } catch (error) {
+        console.warn(`Failed to generate pre-signed URL for ${filename}:`, error);
+      }
     }
 
-    const errorResponse = {
-      response: {
+    return {
+      id: index + 1,
+      title: displayFilename,
+      source: 'YMCA Historical Archives',
+      sourceUrl: pdfUrl,
+      confidence: doc.maxScore,
+      fullText: doc.chunks.join('\n\n...\n\n'),
+      excerpt: doc.chunks[0].substring(0, 300) + '...'
+    };
+  }));
+
+  // Build rich context from grouped sources
+  const retrievedContext = citations.map(source => {
+    return `[Source ${source.id}]: ${source.title}\nCONTENT:\n${source.fullText}`;
+  }).join('\n\n=====================\n\n');
+
+  console.log(`Retrieved ${retrieveResult.retrievalResults.length} chunks, grouped into ${citations.length} unique documents`);
+
+  return { citations, retrievedContext };
+}
+
+/**
+ * Generate AI response using Bedrock with streaming
+ */
+async function generateAIResponse(retrievedContext, queryInEnglish, citations, streamWriter = null) {
+  const enhancedPrompt = createEnhancedPrompt(retrievedContext, queryInEnglish, citations.length);
+
+  const streamCommand = new InvokeModelWithResponseStreamCommand({
+    modelId: 'us.amazon.nova-pro-v1:0',
+    body: JSON.stringify({
+      messages: [{
+        role: 'user',
+        content: [{ text: enhancedPrompt }]
+      }],
+      inferenceConfig: {
+        maxTokens: 4000,
+        temperature: 0.7
+      }
+    })
+  });
+
+  const streamResult = await bedrockRuntimeClient.send(streamCommand);
+  let generatedText = '';
+
+  // Process stream chunks
+  for await (const chunk of streamResult.body) {
+    if (chunk.chunk?.bytes) {
+      const chunkText = new TextDecoder().decode(chunk.chunk.bytes);
+      try {
+        const chunkJson = JSON.parse(chunkText);
+
+        if (chunkJson.contentBlockDelta?.delta?.text) {
+          const textChunk = chunkJson.contentBlockDelta.delta.text;
+          generatedText += textChunk;
+
+          // Stream to client if writer provided
+          if (streamWriter) {
+            streamWriter(textChunk);
+          }
+        } else if (chunkJson.messageStart) {
+          console.log('Message started');
+        } else if (chunkJson.messageStop) {
+          console.log('Message stopped, stop reason:', chunkJson.messageStop.stopReason);
+        }
+      } catch (parseError) {
+        console.warn('Failed to parse chunk:', chunkText, parseError);
+      }
+    }
+  }
+
+  // Parse response
+  try {
+    const jsonResponse = JSON.parse(generatedText);
+    return {
+      type: 'structured',
+      content: jsonResponse,
+      rawText: generatedText
+    };
+  } catch (parseError) {
+    console.warn('Response not in JSON format, structuring as narrative');
+    return {
+      type: 'narrative',
+      content: {
         story: {
-          title: "Technical Difficulties",
-          narrative: "I apologize, but I encountered an error processing your request. Please try again or contact your local YMCA for assistance.",
-          whyItMatters: "Your questions about YMCA history and programs are important to us."
+          title: "YMCA Historical Insights",
+          narrative: generatedText,
+          timeline: "Historical period covered in sources",
+          locations: "Various YMCA locations",
+          keyPeople: "YMCA leaders and community members",
+          whyItMatters: "Understanding our heritage helps guide our future mission"
         },
+        lessonsAndThemes: ["Historical continuity in YMCA's mission", "Community resilience and adaptation"],
+        modernReflection: "These historical insights remind us of the YMCA's enduring commitment to community service.",
         exploreFurther: [
-          "Try rephrasing your question",
-          "What did the YMCA do during major historical events?",
-          "Tell me about YMCA youth programs"
+          "What other historical periods would you like to explore?",
+          "How did the YMCA adapt to other major challenges?",
+          "Tell me about YMCA community programs today"
         ]
       },
-      responseType: 'error',
-      error: 'Internal server error',
-      timestamp: new Date().toISOString()
+      rawText: generatedText
     };
-
-    // If streaming, send error and close stream
-    if (responseStream) {
-      responseStream.write('\n\n---ERROR---\n');
-      responseStream.write(JSON.stringify(errorResponse));
-      responseStream.end();
-      return;
-    }
-
-    return createResponse(500, errorResponse);
   }
 }
 
-// Main handler - non-streaming
+/**
+ * Translate response back to original language
+ */
+async function translateResponse(ragResponse, originalLanguage) {
+  if (originalLanguage === 'en' || !SUPPORTED_LANGUAGES[originalLanguage]) {
+    return ragResponse;
+  }
+
+  try {
+    if (ragResponse.type === 'structured' || ragResponse.type === 'narrative') {
+      const content = ragResponse.content;
+
+      // Collect all text to translate
+      const textsToTranslate = [
+        content.story?.title || '',
+        content.story?.narrative || '',
+        content.story?.timeline || '',
+        content.story?.locations || '',
+        content.story?.keyPeople || '',
+        content.story?.whyItMatters || '',
+        ...(content.lessonsAndThemes || []),
+        content.modernReflection || '',
+        ...(content.exploreFurther || [])
+      ].filter(text => text && text.length > 0);
+
+      // Translate all texts
+      const translatedTexts = await Promise.all(
+        textsToTranslate.map(async (text) => {
+          const translateCmd = new TranslateTextCommand({
+            Text: text,
+            SourceLanguageCode: 'en',
+            TargetLanguageCode: originalLanguage
+          });
+          const result = await translateClient.send(translateCmd);
+          return result.TranslatedText;
+        })
+      );
+
+      // Reconstruct response with translated texts
+      let textIndex = 0;
+      return {
+        ...ragResponse,
+        content: {
+          ...content,
+          story: {
+            title: translatedTexts[textIndex++],
+            narrative: translatedTexts[textIndex++],
+            timeline: translatedTexts[textIndex++],
+            locations: translatedTexts[textIndex++],
+            keyPeople: translatedTexts[textIndex++],
+            whyItMatters: translatedTexts[textIndex++]
+          },
+          lessonsAndThemes: (content.lessonsAndThemes || []).map(() => translatedTexts[textIndex++]),
+          modernReflection: translatedTexts[textIndex++],
+          exploreFurther: (content.exploreFurther || []).map(() => translatedTexts[textIndex++]),
+          citedSources: content.citedSources || []
+        }
+      };
+    }
+
+    console.log(`Translated response to ${originalLanguage}`);
+  } catch (error) {
+    console.warn('Translation of response failed, returning English response:', error);
+  }
+
+  return ragResponse;
+}
+
+/**
+ * Store conversation and analytics in DynamoDB
+ */
+async function storeConversationData(conversationId, sessionId, userId, message, originalLanguage,
+                                     queryInEnglish, finalResponse, ragResponse, citations,
+                                     timestamp, processingTime) {
+  // Store conversation
+  try {
+    await dynamoClient.send(new PutCommand({
+      TableName: CONVERSATION_TABLE,
+      Item: {
+        conversationId: conversationId || sessionId,
+        timestamp: timestamp,
+        userId: userId,
+        sessionId: sessionId,
+        userMessage: message,
+        userLanguage: originalLanguage,
+        translatedQuery: queryInEnglish,
+        aiResponse: finalResponse.content,
+        aiResponseType: finalResponse.type,
+        originalResponse: ragResponse.rawText,
+        responseLanguage: originalLanguage,
+        processingTimeMs: processingTime,
+        citationsCount: citations.length,
+        sources: citations
+      }
+    }));
+  } catch (error) {
+    console.error('Failed to store conversation:', error);
+  }
+
+  // Store analytics
+  try {
+    await dynamoClient.send(new PutCommand({
+      TableName: ANALYTICS_TABLE,
+      Item: {
+        queryId: generateQueryId(),
+        timestamp: timestamp,
+        userId: userId,
+        sessionId: sessionId,
+        conversationId: conversationId || sessionId,
+        language: originalLanguage,
+        queryLength: message.length,
+        responseLength: JSON.stringify(finalResponse.content).length,
+        processingTimeMs: processingTime,
+        translationUsed: originalLanguage !== 'en',
+        knowledgeBaseUsed: true,
+        citationsFound: citations.length,
+        responseType: finalResponse.type,
+        fallbackUsed: finalResponse.fallback || false,
+        success: true
+      }
+    }));
+  } catch (error) {
+    console.error('Failed to store analytics:', error);
+  }
+}
+
+/**
+ * Create error response
+ */
+function createErrorResponse() {
+  return {
+    type: 'error',
+    content: {
+      story: {
+        title: "Unable to Access Archives",
+        narrative: "I'm currently unable to access the YMCA historical archives. Please try again in a moment or contact your local YMCA for historical information.",
+        whyItMatters: "Your questions about YMCA history deserve proper attention from our archives."
+      },
+      exploreFurther: [
+        "Try asking your question again",
+        "Tell me about YMCA programs in the 1900s",
+        "What was the YMCA's role in community development?"
+      ]
+    },
+    rawText: "Knowledge Base temporarily unavailable"
+  };
+}
+
+// ============================================================================
+// MAIN REQUEST HANDLER
+// ============================================================================
+
+/**
+ * Main request processing logic (shared between streaming and non-streaming)
+ */
+async function processRequest(event, streamWriter = null) {
+  console.log('Processing request:', JSON.stringify(event, null, 2));
+
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+  const {
+    message,
+    conversationId,
+    language = 'auto',
+    sessionId = generateSessionId(),
+    userId = 'anonymous'
+  } = body;
+
+  if (!message) {
+    throw new Error('Message is required');
+  }
+
+  const timestamp = Date.now();
+  const ragStartTime = Date.now();
+
+  // Step 1: Translate query to English
+  const { queryInEnglish, originalLanguage } = await translateToEnglish(message, language);
+
+  let ragResponse;
+  let citations = [];
+
+  try {
+    // Step 2: Retrieve context from Knowledge Base
+    const { citations: retrievedCitations, retrievedContext } = await retrieveKnowledgeBaseContext(queryInEnglish);
+    citations = retrievedCitations;
+
+    // Step 3: Generate AI response
+    ragResponse = await generateAIResponse(retrievedContext, queryInEnglish, citations, streamWriter);
+
+    console.log('RAG response generated successfully');
+    console.log('Citations processed:', citations.length);
+  } catch (error) {
+    console.error('RAG query failed:', error);
+    ragResponse = createErrorResponse();
+  }
+
+  const ragEndTime = Date.now();
+  const processingTime = ragEndTime - ragStartTime;
+
+  // Step 4: Translate response back to original language
+  const finalResponse = await translateResponse(ragResponse, originalLanguage);
+
+  // Step 5: Store conversation and analytics
+  await storeConversationData(
+    conversationId, sessionId, userId, message, originalLanguage,
+    queryInEnglish, finalResponse, ragResponse, citations, timestamp, processingTime
+  );
+
+  // Return response data
+  return {
+    response: finalResponse.content,
+    responseType: finalResponse.type,
+    rawResponse: finalResponse.rawText,
+    sources: citations,
+    conversationId: conversationId || sessionId,
+    sessionId: sessionId,
+    language: originalLanguage,
+    processingTime: processingTime,
+    translationUsed: originalLanguage !== 'en',
+    timestamp: new Date(timestamp).toISOString(),
+    metadata: {
+      knowledgeBaseUsed: true,
+      citationsFound: citations.length,
+      responseStructured: finalResponse.type === 'structured',
+      fallbackUsed: finalResponse.fallback || false
+    }
+  };
+}
+
+// ============================================================================
+// LAMBDA HANDLERS
+// ============================================================================
+
+/**
+ * Non-streaming handler
+ */
 exports.handler = async (event, context) => {
-  console.log('Non-streaming handler called with event:', JSON.stringify(event, null, 2));
-  return await handleRequest(event, null);
+  try {
+    const responseData = await processRequest(event);
+    return createResponse(200, responseData);
+  } catch (error) {
+    console.error('Handler error:', error);
+    return createResponse(
+      error.message === 'Message is required' ? 400 : 500,
+      {
+        response: {
+          story: {
+            title: "Technical Difficulties",
+            narrative: "I apologize, but I encountered an error processing your request. Please try again or contact your local YMCA for assistance.",
+            whyItMatters: "Your questions about YMCA history and programs are important to us."
+          },
+          exploreFurther: [
+            "Try rephrasing your question",
+            "What did the YMCA do during major historical events?",
+            "Tell me about YMCA youth programs"
+          ]
+        },
+        responseType: 'error',
+        error: error.message || 'Internal server error',
+        timestamp: new Date().toISOString()
+      }
+    );
+  }
 };
 
-// Streaming handler - uses awslambda global for response streaming
-// awslambda is provided by Lambda runtime, not via require
+/**
+ * Streaming handler
+ */
 exports.streamingHandler = awslambda.streamifyResponse(
   async (event, responseStream, context) => {
-    console.log('Streaming handler called with event:', JSON.stringify(event, null, 2));
+    console.log('Streaming handler called');
 
     const metadata = {
       statusCode: 200,
@@ -554,11 +569,26 @@ exports.streamingHandler = awslambda.streamifyResponse(
 
     responseStream = awslambda.HttpResponseStream.from(responseStream, metadata);
 
-    console.log('Response stream created, starting to write data');
-
     try {
-      await handleStreamingRequest(event, responseStream);
-      console.log('handleStreamingRequest completed successfully');
+      // Stream writer function
+      const streamWriter = (textChunk) => {
+        const sseData = `data: ${JSON.stringify({
+          type: 'chunk',
+          content: textChunk
+        })}\n\n`;
+        responseStream.write(sseData);
+      };
+
+      // Process request with streaming
+      const responseData = await processRequest(event, streamWriter);
+
+      // Send completion event
+      responseStream.write(`data: ${JSON.stringify({
+        type: 'complete',
+        response: responseData
+      })}\n\n`);
+
+      responseStream.write('data: [DONE]\n\n');
     } catch (error) {
       console.error('Streaming handler error:', error);
       responseStream.write(`data: ${JSON.stringify({
@@ -566,507 +596,15 @@ exports.streamingHandler = awslambda.streamifyResponse(
         error: error.message || 'Internal server error'
       })}\n\n`);
     } finally {
-      console.log('Ending response stream');
       responseStream.end();
     }
   }
 );
 
-// Handle streaming request and write to responseStream
-async function handleStreamingRequest(event, responseStream) {
-  try {
-    // Parse request body
-    const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const {
-      message,
-      conversationId,
-      language = 'auto',
-      sessionId = generateSessionId(),
-      userId = 'anonymous'
-    } = body;
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
 
-    if (!message) {
-      responseStream.write('data: {"type": "error", "error": "Message is required"}\n\n');
-      return;
-    }
-
-    // Generate unique query ID for analytics
-    const queryId = generateQueryId();
-    const timestamp = Date.now();
-
-    // Step 1: Initialize language variables (detection happens during translation)
-    let detectedLanguage = language === 'auto' ? 'en' : language;
-    let originalLanguage = language === 'auto' ? 'en' : language;
-
-    // Step 2: Translate query to English if needed (for better RAG performance)
-    let queryInEnglish = message;
-    if (language === 'auto' || detectedLanguage !== 'en') {
-      try {
-        const translateCommand = new TranslateTextCommand({
-          Text: message,
-          SourceLanguageCode: language === 'auto' ? 'auto' : detectedLanguage,
-          TargetLanguageCode: 'en'
-        });
-        const translateResult = await translateClient.send(translateCommand);
-        queryInEnglish = translateResult.TranslatedText;
-
-        // Extract detected language from auto-detection
-        if (language === 'auto' && translateResult.SourceLanguageCode) {
-          detectedLanguage = translateResult.SourceLanguageCode;
-          originalLanguage = translateResult.SourceLanguageCode;
-          console.log(`Auto-detected language: ${detectedLanguage}`);
-        }
-
-        console.log(`Translated query to English: ${queryInEnglish}`);
-      } catch (error) {
-        console.warn('Translation to English failed, using original query:', error);
-      }
-    }
-
-    // Step 3: Retrieve relevant context from Knowledge Base
-    const ragStartTime = Date.now();
-    let ragResponse;
-    let citations = [];
-    let retrievedContext = '';
-
-    try {
-      // First, retrieve relevant chunks from Knowledge Base
-      const retrieveCommand = new RetrieveCommand({
-        knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        retrievalQuery: {
-          text: queryInEnglish
-        },
-        retrievalConfiguration: {
-          vectorSearchConfiguration: {
-            numberOfResults: 10 // Get more context for rich storytelling
-          }
-        }
-      });
-
-      const retrieveResult = await bedrockAgentClient.send(retrieveCommand);
-
-      // Process retrieved chunks and build context
-      if (retrieveResult.retrievalResults && retrieveResult.retrievalResults.length > 0) {
-        // Extract citations with proper metadata and generate pre-signed URLs
-        citations = await Promise.all(retrieveResult.retrievalResults.map(async (result, index) => {
-          const s3Uri = result.location?.s3Location?.uri || '';
-
-          // Extract original PDF filename from the processed JSON path
-          // Example: s3://bucket/output/processed-text/doc-123/1981.pdf.json -> 1981.pdf
-          let pdfFilename = 'Document';
-          let pdfUrl = null;
-
-          if (s3Uri) {
-            const match = s3Uri.match(/\/([^/]+)\.pdf\.json$/);
-            if (match) {
-              pdfFilename = match[1] + '.pdf';
-
-              // Generate pre-signed URL for the original PDF in input/ directory
-              try {
-                const bucket = process.env.DOCUMENTS_BUCKET;
-                const key = `input/${pdfFilename}`;
-
-                // Try to retrieve original filename from metadata (for obfuscated files)
-                let displayFilename = pdfFilename;
-                try {
-                  const headCommand = new HeadObjectCommand({ Bucket: bucket, Key: key });
-                  const metadata = await s3Client.send(headCommand);
-                  if (metadata.Metadata && (metadata.Metadata['original-name'] || metadata.Metadata['x-amz-meta-original-name'])) {
-                    displayFilename = metadata.Metadata['original-name'] || metadata.Metadata['x-amz-meta-original-name'];
-                  }
-                } catch (headError) {
-                  // Ignore if metadata fetch fails
-                }
-
-                const command = new GetObjectCommand({
-                  Bucket: bucket,
-                  Key: key,
-                  ResponseContentDisposition: `inline; filename="${displayFilename}"`
-                });
-
-                pdfUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 }); // 5 minute (LOWEST expiry for security)
-                pdfFilename = displayFilename; // Update title
-              } catch (error) {
-                console.warn(`Failed to generate pre-signed URL for ${pdfFilename}:`, error);
-              }
-            }
-          }
-
-          return {
-            id: `source-${index + 1}`,
-            title: pdfFilename,
-            source: `YMCA Historical Archives`,
-            sourceUrl: pdfUrl,
-            confidence: result.score || 0.8,
-            excerpt: result.content?.text?.substring(0, 300) + '...' || '',
-            fullText: result.content?.text || ''
-          };
-        }));
-
-        // Build rich context from retrieved chunks
-        retrievedContext = retrieveResult.retrievalResults
-          .map((result, index) => `[Source ${index + 1}]: ${result.content?.text || ''}`)
-          .join('\n\n');
-
-        console.log(`Retrieved ${retrieveResult.retrievalResults.length} relevant chunks`);
-      }
-
-      // Step 4: Generate response using retrieved context with enhanced prompting
-      const enhancedPrompt = `You are a knowledgeable YMCA historian and storyteller with deep expertise in YMCA history, programs, and community impact. Your role is to transform archival materials into engaging, accessible narratives that inspire present-day reflection and decision-making.
-
-RETRIEVED CONTEXT FROM YMCA ARCHIVES:
-${retrievedContext}
-
-USER QUESTION: ${queryInEnglish}
-
-RESPONSE REQUIREMENTS:
-1. **STORYTELLING APPROACH**: Don't just answer - tell a compelling story that brings history to life
-2. **USE THE CONTEXT**: Base your response primarily on the retrieved archival materials above
-3. **NARRATIVE STRUCTURE**: Create an engaging story with clear flow
-4. **HISTORICAL CONTEXT**: Provide rich background and connect events to broader themes
-5. **HUMAN ELEMENTS**: Include specific people, dates, locations, and personal stories from the context
-6. **CITE SOURCES WITH PAGES**: Reference sources like [Source 1, p.15] or [Source 2, pp.23-24] in your narrative. Extract page numbers from the source metadata if available.
-7. **UNIQUE INSIGHTS**: If this is a follow-up question, provide NEW information and perspectives not covered in previous responses. Avoid repeating the same historical facts.
-8. **CONVERSATION STARTERS**: Generate 3 engaging, SPECIFIC questions that explore different angles, time periods, or themes NOT covered in this response
-
-RESPONSE FORMAT (JSON):
-{
-  "story": {
-    "title": "Engaging title that captures the essence of the historical moment",
-    "narrative": "Rich, multi-paragraph storytelling response that weaves together information from the sources. Include specific dates, names, places, and events. Reference sources like [Source 1, p.15] naturally within the narrative.",
-    "timeline": "Key dates and periods mentioned in the sources",
-    "locations": "Specific places mentioned in the retrieved context",
-    "keyPeople": "Important individuals and their roles as mentioned in the sources",
-    "whyItMatters": "Modern relevance and lessons for today's YMCA work"
-  },
-  "lessonsAndThemes": [
-    "Key insight or lesson drawn from the historical evidence",
-    "Another important theme or pattern from the sources"
-  ],
-  "modernReflection": "How this historical moment teaches us about today's challenges and opportunities in YMCA work",
-  "exploreFurther": [
-    "Specific question exploring a different time period or theme",
-    "Question about a different aspect not covered above",
-    "Question that connects to a different YMCA program or initiative"
-  ],
-  "citedSources": [1, 2, 5]
-}
-
-TONE: Engaging, authoritative, and inspiring. Write as if you're a passionate historian sharing fascinating discoveries from newly uncovered archives. Use vivid language and specific details from the sources to make history come alive.
-
-IMPORTANT:
-- Include a "citedSources" array listing ONLY the source numbers you actually referenced in your narrative
-- Include page numbers in citations when available from the source metadata
-- If this is a follow-up question, focus on NEW aspects not previously discussed
-- If the retrieved context doesn't contain enough information, acknowledge this honestly
-- Always ground your response in the actual retrieved sources
-- Don't invent facts not present in the context
-- If sources conflict, acknowledge different perspectives`;
-
-      // Use streaming for real-time response
-      const streamCommand = new InvokeModelWithResponseStreamCommand({
-        modelId: 'us.amazon.nova-pro-v1:0',
-        body: JSON.stringify({
-          messages: [{
-            role: 'user',
-            content: [{ text: enhancedPrompt }]
-          }],
-          inferenceConfig: {
-            maxTokens: 3000,
-            temperature: 0.7
-          }
-        })
-      });
-
-      const streamResult = await bedrockRuntimeClient.send(streamCommand);
-      let generatedText = '';
-
-      // Process stream chunks and format as Server-Sent Events
-      for await (const chunk of streamResult.body) {
-        if (chunk.chunk?.bytes) {
-          const chunkText = new TextDecoder().decode(chunk.chunk.bytes);
-          try {
-            const chunkJson = JSON.parse(chunkText);
-
-            // Handle Nova contentBlockDelta events (text chunks)
-            if (chunkJson.contentBlockDelta?.delta?.text) {
-              const textChunk = chunkJson.contentBlockDelta.delta.text;
-              generatedText += textChunk;
-
-              // Write as Server-Sent Event to responseStream
-              const sseData = `data: ${JSON.stringify({
-                type: 'chunk',
-                content: textChunk
-              })}\n\n`;
-              responseStream.write(sseData);
-              console.log('Wrote chunk to stream, length:', textChunk.length);
-            }
-            else if (chunkJson.messageStart) {
-              console.log('Message started');
-            }
-            else if (chunkJson.messageStop) {
-              console.log('Message stopped, stop reason:', chunkJson.messageStop.stopReason);
-            }
-          } catch (parseError) {
-            console.warn('Failed to parse chunk:', chunkText, parseError);
-          }
-        }
-      }
-
-      // Try to parse as JSON first, fallback to structured text if needed
-      try {
-        const jsonResponse = JSON.parse(generatedText);
-        ragResponse = {
-          type: 'structured',
-          content: jsonResponse,
-          rawText: generatedText
-        };
-      } catch (parseError) {
-        console.warn('Response not in JSON format, structuring as narrative');
-        ragResponse = {
-          type: 'narrative',
-          content: {
-            story: {
-              title: "YMCA Historical Insights",
-              narrative: generatedText,
-              timeline: "Historical period covered in sources",
-              locations: "Various YMCA locations",
-              keyPeople: "YMCA leaders and community members",
-              whyItMatters: "Understanding our heritage helps guide our future mission"
-            },
-            lessonsAndThemes: ["Historical continuity in YMCA's mission", "Community resilience and adaptation"],
-            modernReflection: "These historical insights remind us of the YMCA's enduring commitment to community service.",
-            exploreFurther: [
-              "What other historical periods would you like to explore?",
-              "How did the YMCA adapt to other major challenges?",
-              "Tell me about YMCA community programs today"
-            ]
-          },
-          rawText: generatedText
-        };
-      }
-
-      console.log('RAG response generated successfully using Retrieve API');
-      console.log('Citations processed:', citations.length);
-
-    } catch (error) {
-      console.error('RAG query failed:', error);
-
-      // Simple error response
-      ragResponse = {
-        type: 'error',
-        content: {
-          story: {
-            title: "Unable to Access Archives",
-            narrative: "I'm currently unable to access the YMCA historical archives. Please try again in a moment or contact your local YMCA for historical information.",
-            whyItMatters: "Your questions about YMCA history deserve proper attention from our archives."
-          },
-          exploreFurther: [
-            "Try asking your question again",
-            "Tell me about YMCA programs in the 1900s",
-            "What was the YMCA's role in community development?"
-          ]
-        },
-        rawText: "Knowledge Base temporarily unavailable"
-      };
-    }
-
-    const ragEndTime = Date.now();
-
-    // Step 4: Translate response back to original language if needed
-    let finalResponse = ragResponse;
-    if (originalLanguage !== 'en' && SUPPORTED_LANGUAGES[originalLanguage]) {
-      try {
-        // For structured responses, translate ALL text fields
-        if (ragResponse.type === 'structured' || ragResponse.type === 'narrative') {
-          const content = ragResponse.content;
-
-          // Collect all text to translate
-          const textsToTranslate = [
-            content.story?.title || '',
-            content.story?.narrative || '',
-            content.story?.timeline || '',
-            content.story?.locations || '',
-            content.story?.keyPeople || '',
-            content.story?.whyItMatters || '',
-            ...(content.lessonsAndThemes || []),
-            content.modernReflection || '',
-            ...(content.exploreFurther || [])
-          ].filter(text => text && text.length > 0);
-
-          // Translate all texts in batch
-          const translatedTexts = [];
-          for (const text of textsToTranslate) {
-            const translateCmd = new TranslateTextCommand({
-              Text: text,
-              SourceLanguageCode: 'en',
-              TargetLanguageCode: originalLanguage
-            });
-            const result = await translateClient.send(translateCmd);
-            translatedTexts.push(result.TranslatedText);
-          }
-
-          // Reconstruct response with translated texts
-          let textIndex = 0;
-          finalResponse = {
-            ...ragResponse,
-            content: {
-              ...content,
-              story: {
-                title: translatedTexts[textIndex++],
-                narrative: translatedTexts[textIndex++],
-                timeline: translatedTexts[textIndex++],
-                locations: translatedTexts[textIndex++],
-                keyPeople: translatedTexts[textIndex++],
-                whyItMatters: translatedTexts[textIndex++]
-              },
-              lessonsAndThemes: (content.lessonsAndThemes || []).map(() => translatedTexts[textIndex++]),
-              modernReflection: translatedTexts[textIndex++],
-              exploreFurther: (content.exploreFurther || []).map(() => translatedTexts[textIndex++]),
-              citedSources: content.citedSources || []
-            }
-          };
-        }
-        console.log(`Translated response to ${originalLanguage}`);
-      } catch (error) {
-        console.warn('Translation of response failed, returning English response:', error);
-      }
-    }
-
-    // Step 5: Store conversation in DynamoDB with enhanced metadata
-    try {
-      await dynamoClient.send(new PutCommand({
-        TableName: CONVERSATION_TABLE,
-        Item: {
-          conversationId: conversationId || sessionId,
-          timestamp: timestamp,
-          userId: userId,
-          sessionId: sessionId,
-          userMessage: message,
-          userLanguage: originalLanguage,
-          translatedQuery: queryInEnglish,
-          aiResponse: finalResponse.content,
-          aiResponseType: finalResponse.type,
-          originalResponse: ragResponse.rawText,
-          responseLanguage: originalLanguage,
-          processingTimeMs: ragEndTime - ragStartTime,
-          citationsCount: citations.length,
-          sources: citations
-        }
-      }));
-    } catch (error) {
-      console.error('Failed to store conversation:', error);
-    }
-
-    // Step 6: Store enhanced analytics
-    try {
-      await dynamoClient.send(new PutCommand({
-        TableName: ANALYTICS_TABLE,
-        Item: {
-          queryId: queryId,
-          timestamp: timestamp,
-          userId: userId,
-          sessionId: sessionId,
-          conversationId: conversationId || sessionId,
-          language: originalLanguage,
-          queryLength: message.length,
-          responseLength: JSON.stringify(finalResponse.content).length,
-          processingTimeMs: ragEndTime - ragStartTime,
-          translationUsed: originalLanguage !== 'en',
-          knowledgeBaseUsed: true,
-          citationsFound: citations.length,
-          responseType: finalResponse.type,
-          fallbackUsed: finalResponse.fallback || false,
-          success: true
-        }
-      }));
-    } catch (error) {
-      console.error('Failed to store analytics:', error);
-    }
-
-    // Filter sources to only include cited ones
-    const citedSourceIndices = finalResponse.content.citedSources || [];
-    const filteredCitations = citedSourceIndices.length > 0
-      ? citations.filter((_, index) => citedSourceIndices.includes(index + 1))
-      : citations;
-
-    // Send final structured response
-    const responseData = {
-      response: finalResponse.content,
-      responseType: finalResponse.type,
-      rawResponse: finalResponse.rawText,
-      sources: filteredCitations,
-      conversationId: conversationId || sessionId,
-      sessionId: sessionId,
-      language: originalLanguage,
-      processingTime: ragEndTime - ragStartTime,
-      translationUsed: originalLanguage !== 'en',
-      timestamp: new Date(timestamp).toISOString(),
-      metadata: {
-        knowledgeBaseUsed: true,
-        citationsFound: filteredCitations.length,
-        responseStructured: finalResponse.type === 'structured',
-        fallbackUsed: finalResponse.fallback || false
-      }
-    };
-
-    // Send completion event with final structured response
-    console.log('Sending completion event with response data');
-    responseStream.write(`data: ${JSON.stringify({
-      type: 'complete',
-      response: responseData
-    })}\n\n`);
-
-    // Send done signal
-    console.log('Sending [DONE] signal');
-    responseStream.write('data: [DONE]\n\n');
-
-  } catch (error) {
-    console.error('Streaming request error:', error);
-
-    // Store error analytics
-    try {
-      await dynamoClient.send(new PutCommand({
-        TableName: ANALYTICS_TABLE,
-        Item: {
-          queryId: generateQueryId(),
-          timestamp: Date.now(),
-          userId: 'unknown',
-          error: error.message,
-          success: false
-        }
-      }));
-    } catch (analyticsError) {
-      console.error('Failed to store error analytics:', analyticsError);
-    }
-
-    const errorResponse = {
-      response: {
-        story: {
-          title: "Technical Difficulties",
-          narrative: "I apologize, but I encountered an error processing your request. Please try again or contact your local YMCA for assistance.",
-          whyItMatters: "Your questions about YMCA history and programs are important to us."
-        },
-        exploreFurther: [
-          "Try rephrasing your question",
-          "What did the YMCA do during major historical events?",
-          "Tell me about YMCA youth programs"
-        ]
-      },
-      responseType: 'error',
-      error: 'Internal server error',
-      timestamp: new Date().toISOString()
-    };
-
-    responseStream.write(`data: ${JSON.stringify({
-      type: 'error',
-      error: error.message,
-      response: errorResponse
-    })}\n\n`);
-  }
-}
-
-// Helper functions
 function createResponse(statusCode, body) {
   return {
     statusCode,
@@ -1086,4 +624,69 @@ function generateSessionId() {
 
 function generateQueryId() {
   return 'query_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+/**
+ * Create enhanced prompt that enforces multi-source synthesis
+ */
+function createEnhancedPrompt(retrievedContext, queryInEnglish, numSources) {
+  return `You are a knowledgeable YMCA historian and storyteller with deep expertise in YMCA history, programs, and community impact. Your role is to transform archival materials into engaging, accessible narratives that inspire present-day reflection and decision-making.
+
+RETRIEVED CONTEXT FROM YMCA ARCHIVES:
+${retrievedContext}
+
+USER QUESTION: ${queryInEnglish}
+
+CRITICAL REQUIREMENTS FOR SOURCE SYNTHESIS:
+1. **MANDATORY MULTI-SOURCE USAGE**: You have ${numSources} sources available. You MUST reference and synthesize information from AT LEAST ${Math.min(3, numSources)} different sources in your response.
+2. **DISTRIBUTED CITATIONS**: Do NOT cite the same source repeatedly. Spread your citations across different sources naturally throughout the narrative.
+3. **SOURCE INTEGRATION**: Compare, contrast, or show evolution across different documents. For example: "In the early 1980s [Source 1], the YMCA focused on X, while later developments in the 1990s [Source 2] showed a shift to Y, and by 2000 [Source 3] we see Z emerging."
+4. **CROSS-REFERENCE**: Look for connections between sources. If Source 1 mentions a program and Source 3 discusses its impact, connect them.
+5. **DIVERSITY**: Use different sources for different sections of your response (e.g., Source 1 for timeline, Source 2 for locations, Source 3 for key people).
+
+RESPONSE STRUCTURE REQUIREMENTS:
+1. **STORYTELLING APPROACH**: Create a compelling narrative that brings history to life across multiple timeframes and perspectives.
+2. **RICH NARRATIVE**: Your "narrative" field should be 3-5 substantial paragraphs that weave together insights from multiple sources.
+3. **SPECIFIC DETAILS**: Include dates, names, places, and events from the sources.
+4. **NATURAL CITATIONS**: Integrate source references naturally in the narrative, e.g., "According to the 1981 annual report [Source 1], youth programs expanded significantly, a trend that continued through the decade [Source 2] and eventually led to [Source 3]..."
+5. **ENGAGING EXPLORATION**: Generate 3 specific follow-up questions that explore different aspects or time periods.
+
+RESPONSE FORMAT (JSON):
+{
+  "story": {
+    "title": "Engaging title that captures the essence of the historical narrative",
+    "narrative": "Rich, multi-paragraph storytelling response (3-5 paragraphs) that synthesizes information from MULTIPLE sources. Each paragraph should ideally reference different sources. Use natural citations like 'In 1981 [Source 1]...' or 'As noted in later reports [Source 2]...'",
+    "timeline": "Comprehensive timeline spanning all sources: e.g., '1857, 1920s, 1960s-1970s, 1977, 1981, 1990s'",
+    "locations": "All specific places mentioned across sources",
+    "keyPeople": "Important individuals mentioned across all sources",
+    "whyItMatters": "Modern relevance drawing on lessons from multiple time periods and sources"
+  },
+  "lessonsAndThemes": [
+     "Key insight from Source X",
+     "Related theme from Source Y",
+     "Pattern observed across Sources X, Y, and Z"
+  ],
+  "modernReflection": "Connection to today's challenges, referencing patterns seen across multiple sources",
+  "exploreFurther": [
+    "Specific question about aspect from Source 1",
+    "Question exploring connection between Sources 2 and 3",
+    "Question about time period or theme not fully covered"
+  ],
+  "citedSources": [1, 2, 3, ...]
+}
+
+VALIDATION CHECKLIST (Review before responding):
+- [ ] Have I cited at least 3 different sources (if available)?
+- [ ] Are my citations distributed throughout the narrative, not clustered?
+- [ ] Does each paragraph reference different sources?
+- [ ] Have I drawn connections or contrasts between sources?
+- [ ] Does my timeline span multiple sources?
+- [ ] Have I avoided repeating the same source citation unnecessarily?
+
+TONE: Engaging, authoritative, and inspiring. Write as if you're a passionate historian who has studied multiple documents and is sharing fascinating connections you've discovered.
+
+IMPORTANT:
+- The "citedSources" array must list ALL Source IDs you referenced (e.g., [1, 2, 3, 4]).
+- Ground your response in the retrieved sources - do not make up information.
+- Prioritize breadth and synthesis over depth in a single source.`;
 }
