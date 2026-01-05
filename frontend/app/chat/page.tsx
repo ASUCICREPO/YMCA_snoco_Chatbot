@@ -11,6 +11,7 @@ import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useChat } from '../hooks/useChat';
 import { cn } from '../../lib/utils';
 import type { ChatResponse, Message } from '../../types/api';
@@ -33,8 +34,7 @@ import {
   LightbulbIcon
 } from '../../lib/icons';
 
-// Logo image - commented out as currently unused
-// const imgImage3 = "http://localhost:3845/assets/d005aa1de1f0be0acb65a4ca67a096300f4ad73c.png";
+
 
 /**
  * Message Bubble Component
@@ -339,7 +339,7 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
 };
 
 // Starter prompts data with translation keys
-const getStarterPrompts = () => [
+const getStarterPrompts = (t: TFunction) => [
   {
     id: 'crisis',
     titleKey: 'starterCrisisTitle',
@@ -451,7 +451,7 @@ export default function ChatPage() {
               <div className="content-stretch flex flex-col gap-[24px] items-start relative shrink-0 w-full">
                 {/* First Row */}
                 <div className="content-stretch flex gap-[24px] items-start relative shrink-0 w-full">
-                  {getStarterPrompts().slice(0, 2).map((prompt) => {
+                  {getStarterPrompts(t).slice(0, 2).map((prompt) => {
                     const IconComponent = prompt.icon;
                     return (
                       <button
@@ -482,7 +482,7 @@ export default function ChatPage() {
 
                 {/* Second Row */}
                 <div className="content-stretch flex gap-[24px] items-start relative shrink-0 w-full">
-                  {getStarterPrompts().slice(2, 4).map((prompt) => {
+                  {getStarterPrompts(t).slice(2, 4).map((prompt) => {
                     const IconComponent = prompt.icon;
                     return (
                       <button
