@@ -95,14 +95,14 @@ export async function GET(request: NextRequest) {
     const wordCounts: Record<string, number> = {};
 
     queryTexts.forEach(text => {
-      const words = text.split(/\s+/).filter(w => w.length > 4); // Filter short words
-      words.forEach(word => {
+      const words = text.split(/\s+/).filter((w: string) => w.length > 4); // Filter short words
+      words.forEach((word: string) => {
         wordCounts[word] = (wordCounts[word] || 0) + 1;
       });
     });
 
     const trendingTopics = Object.entries(wordCounts)
-      .sort(([, a], [, b]) => b - a)
+      .sort(([, a]: [string, number], [, b]: [string, number]) => b - a)
       .slice(0, 20)
       .map(([word, count]) => ({ topic: word, count }));
 
