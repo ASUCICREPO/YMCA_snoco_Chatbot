@@ -360,6 +360,24 @@ export default function ChatPage() {
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Check for pending message from home page
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const pendingMessage = sessionStorage.getItem('pendingMessage');
+      if (pendingMessage) {
+        // Clear it immediately to prevent re-sending
+        sessionStorage.removeItem('pendingMessage');
+        // Send the message if it's not already in the conversation
+        const messageExists = conversation?.messages.some(
+          msg => msg.role === 'user' && msg.content === pendingMessage
+        );
+        if (!messageExists) {
+          sendMessage(pendingMessage);
+        }
+      }
+    }
+  }, []); // Run only once on mount
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
