@@ -7,7 +7,7 @@
  * It follows React best practices with proper typing and state management.
  */
 
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import type { Message, Conversation, ChatResponse } from '../../types/api';
 import { generateSessionId, generateMessageId } from '../../lib/api-service';
 
@@ -32,6 +32,28 @@ interface ChatProviderProps {
 
 export const ChatProvider = ({ children }: ChatProviderProps) => {
   const [conversation, setConversation] = useState<Conversation | null>(() => {
+    // Try to restore conversation from localStorage
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('ymca-conversation');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          // Convert date strings back to Date objects
+          return {
+            ...parsed,
+            createdAt: new Date(parsed.createdAt),
+            updatedAt: new Date(parsed.updatedAt),
+            messages: parsed.messages.map((msg: any) => ({
+              ...msg,
+              timestamp: new Date(msg.timestamp),
+            })),
+          };
+        } catch (e) {
+          console.error('Failed to parse saved conversation:', e);
+        }
+      }
+    }
+
     // Initialize with a new conversation
     return {
       id: generateSessionId(),
@@ -45,6 +67,13 @@ export const ChatProvider = ({ children }: ChatProviderProps) => {
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Persist conversation to localStorage whenever it changes
+  useEffect(() => {
+    if (conversation && typeof window !== 'undefined') {
+      localStorage.setItem('ymca-conversation', JSON.stringify(conversation));
+    }
+  }, [conversation]);
 
   const addUserMessage = useCallback((content: string): string => {
     const messageId = generateMessageId();
@@ -84,16 +113,16 @@ export const ChatProvider = ({ children }: ChatProviderProps) => {
 
       if (existingIndex >= 0) {
         const existingMessage = prev.messages[existingIndex];
-        
+
         // If the existing message has streaming content and the new message is just a placeholder,
         // preserve the streaming content
-        if (existingMessage.isStreaming && 
-            existingMessage.content && 
-            typeof existingMessage.content === 'object' &&
-            existingMessage.content.response?.story?.narrative) {
+        if (existingMessage.isStreaming &&
+          existingMessage.content &&
+          typeof existingMessage.content === 'object' &&
+          existingMessage.content.response?.story?.narrative) {
           const existingNarrative = existingMessage.content.response.story.narrative;
           const newNarrative = content && typeof content === 'object' && content.response?.story?.narrative;
-          
+
           // If new content is empty or just "Streaming response completed", keep the existing content
           if (!newNarrative || newNarrative === 'Streaming response completed') {
             newMessage.content = {
@@ -108,7 +137,7 @@ export const ChatProvider = ({ children }: ChatProviderProps) => {
             };
           }
         }
-        
+
         // Update existing message
         const updatedMessages = [...prev.messages];
         updatedMessages[existingIndex] = newMessage;
@@ -175,15 +204,21 @@ export const ChatProvider = ({ children }: ChatProviderProps) => {
   }, []);
 
   const clearConversation = useCallback(() => {
-    setConversation({
+    const newConversation = {
       id: generateSessionId(),
       sessionId: generateSessionId(),
       messages: [],
       language: conversation?.language || 'auto',
       createdAt: new Date(),
       updatedAt: new Date(),
-    });
+    };
+    setConversation(newConversation);
     setError(null);
+
+    // Clear from localStorage
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('ymca-conversation');
+    }
   }, [conversation?.language]);
 
   const setLanguage = useCallback((language: string) => {
