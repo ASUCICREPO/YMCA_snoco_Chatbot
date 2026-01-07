@@ -399,15 +399,25 @@ export default function ChatPage() {
   const { sendMessage, isLoading, conversation } = useChat();
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [isAuthorized, setIsAuthorized] = useState(false);
 
-  // Redirect to home if user tries to access /chat directly without a conversation
+  // Check if user has legitimate access to chat page
   useEffect(() => {
-    // Check if there's no conversation or no messages
-    if (!conversation || !conversation.messages || conversation.messages.length === 0) {
-      // Redirect to home page
+    // Check if there are messages OR if user came from home page
+    const hasMessages = conversation?.messages && conversation.messages.length > 0;
+    const hasAccess = typeof window !== 'undefined' && sessionStorage.getItem('chatAccess') === 'true';
+
+    if (hasMessages || hasAccess) {
+      setIsAuthorized(true);
+      // Set access flag for future navigation
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('chatAccess', 'true');
+      }
+    } else {
+      // Redirect to home if no messages and no access flag
       router.push('/');
     }
-  }, [conversation, router]);
+  }, [conversation?.messages, router]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -442,6 +452,11 @@ export default function ChatPage() {
       sendMessage(prompt);
     }
   };
+
+  // Don't render until authorization check is complete
+  if (!isAuthorized) {
+    return null;
+  }
 
   return (
     <div

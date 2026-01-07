@@ -45,6 +45,10 @@ export default function Home() {
 
   const submitMessage = () => {
     if (inputValue.trim()) {
+      // Grant access to chat page
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('chatAccess', 'true');
+      }
       // Send the message using the chat hook
       sendMessage(inputValue);
       // Navigate to chat page
@@ -60,6 +64,10 @@ export default function Home() {
   };
 
   const handleStarterPromptClick = (prompt: string) => {
+    // Grant access to chat page
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('chatAccess', 'true');
+    }
     // Send the message
     sendMessage(prompt);
     // Navigate to chat page
