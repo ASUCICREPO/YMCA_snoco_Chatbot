@@ -52,7 +52,14 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
   useEffect(() => {
     if (message.isStreaming && message.role === 'assistant') {
       const response = message.content as ChatResponse;
-      const narrative = response.response?.story?.narrative || '';
+      let narrative = response.response?.story?.narrative || '';
+
+      // Clean up JSON artifacts from streaming
+      // Remove opening JSON structure like { "story": { "title": "...", "narrative": "
+      narrative = narrative.replace(/^\s*\{\s*"story"\s*:\s*\{\s*"title"\s*:\s*"[^"]*"\s*,\s*"narrative"\s*:\s*"/i, '');
+      // Remove any remaining opening braces and quotes at the start
+      narrative = narrative.replace(/^\s*\{\s*"[^"]*"\s*:\s*"/g, '');
+      narrative = narrative.replace(/^\s*"/g, '');
 
       if (narrative && narrative !== displayedText) {
         setIsTyping(true);
