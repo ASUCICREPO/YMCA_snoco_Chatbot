@@ -193,9 +193,13 @@ The script will:
 ### Admin Features
 
 1. **Login**: Navigate to `/admin` and use your Cognito credentials
-2. **Upload Documents**: Add PDFs or images to expand the knowledge base
-3. **View Analytics**: Track usage, popular topics, and conversation metrics
-4. **Monitor Processing**: Check document processing status in Step Functions
+2. **Upload Documents**: Use the admin page upload feature to add PDFs to expand the knowledge base
+   - Documents are uploaded to S3 `input/` folder
+   - Textract automatically processes and extracts text
+   - **Verify Processing**: Check S3 bucket `output/processed-text/` folder to confirm files are populated (processing complete)
+3. **Sync Knowledge Base**: After processing completes, navigate to AWS Bedrock Console → Knowledge Bases → `ymca-knowledge-base` → Data Sources → `ymca-s3-documents` → Click **"Sync"** to make documents queryable
+4. **View Analytics**: Track usage, popular topics, and conversation metrics
+5. **Monitor Processing**: Check document processing status in Step Functions
 
 **📚 For detailed usage instructions with examples, see the [User Guide](./docs/userGuide.md).**
 

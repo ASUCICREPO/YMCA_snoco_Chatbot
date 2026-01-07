@@ -229,20 +229,45 @@ The chatbot maintains conversation context, so you can ask follow-up questions:
 **Purpose**: Add new historical documents to expand the knowledge base
 
 **Steps:**
-1. Log in to the admin dashboard
-2. Navigate to the "Upload Documents" section
-3. Click "Choose File" or drag and drop a document
-4. Supported formats: PDF, PNG, JPG, JPEG, TIFF
-5. Click "Upload"
-6. Wait for processing (may take a few minutes for large documents)
-7. The document will be available for the chatbot to reference
+1. Log in to the admin dashboard (`/admin`)
+2. Scroll to the **"Upload Documents"** section at the top of the page
+3. Click the upload area or drag and drop PDF files
+4. Supported formats: **PDF** (recommended), PNG, JPG, JPEG, TIFF
+5. Click **"Upload Files"** button
+6. Monitor the upload progress bar for each file
+7. **Wait for Processing** (2-10 minutes depending on document size):
+   - Files are uploaded to S3 `input/` folder
+   - Step Functions triggers Textract OCR processing
+   - Processed text is saved to S3 `output/processed-text/` folder
+8. **Verify Processing Complete**:
+   - Navigate to AWS S3 Console
+   - Open bucket: `ymca-documents-[ACCOUNT-ID]-[REGION]`
+   - Check the `output/processed-text/` folder
+   - Confirm your uploaded file(s) appear as JSON files (e.g., `1234567890-document.pdf.json`)
+   - If files don't appear, check Step Functions for processing status
+9. **Sync the Knowledge Base** (Required Manual Step):
+   - Navigate to the AWS Bedrock Console
+   - Go to **Knowledge Bases** → **ymca-knowledge-base**
+   - Click on **Data Sources** → **ymca-s3-documents**
+   - Click the **"Sync"** button to start the ingestion job
+   - Wait for the sync to complete (usually 2-5 minutes)
+   - Status will change from "Syncing" to "Ready"
+10. The document is now available for the chatbot to reference
 
 **Document Processing Timeline**:
-- **Immediate**: File uploaded to S3
+- **Immediate**: File uploaded to S3 `input/` folder via admin page
 - **30 seconds - 2 minutes**: Textract begins processing
 - **2-10 minutes**: Text extraction completes (varies by document size)
-- **10-15 minutes**: Document indexed in knowledge base
+- **Verify**: Check S3 `output/processed-text/` folder for JSON files
+- **Manual Step Required**: Sync the Knowledge Base data source
+- **2-5 minutes**: Knowledge Base ingestion completes
 - **Ready**: Chatbot can now reference the document
+
+**Important Notes**:
+- The admin page provides a user-friendly interface for uploading documents without needing AWS Console access for uploads
+- Always verify files appear in `output/processed-text/` before syncing the Knowledge Base
+- The Knowledge Base sync is a required manual step - without it, documents won't be queryable
+- Large documents (350-400 pages) are supported but take longer to process
 
 ### Viewing Analytics
 
@@ -280,9 +305,11 @@ The chatbot maintains conversation context, so you can ask follow-up questions:
 
 ### Q: Why doesn't the chatbot know about a specific topic?
 **A:** The chatbot can only answer questions based on documents uploaded to the knowledge base. If information is missing:
-- Check if relevant documents have been uploaded
-- Ask an admin to upload historical documents covering that topic
-- Wait 10-15 minutes after upload for indexing to complete
+- Check if relevant documents have been uploaded via the admin page
+- **Verify processing completed**: Check S3 `output/processed-text/` folder for JSON files
+- **Verify the Knowledge Base has been synced** after uploading (this is a required manual step)
+- Ask an admin to upload historical documents covering that topic using the admin page upload feature
+- Wait 10-15 minutes after syncing for indexing to complete
 
 ### Q: Can I download the source documents cited in responses?
 **A:** Yes! Click the source title in the "Sources" section. The download link is valid for 5 minutes. If expired, ask the question again to get a fresh link.
@@ -341,10 +368,13 @@ Use the streaming endpoint for faster perceived response time.
 
 ### Issue: Uploaded document not showing in responses
 **Solution**:
-- Wait 10-15 minutes for document processing and indexing
-- Check Step Functions in AWS Console for processing status
-- Verify the document was uploaded successfully (check S3 bucket)
+- **Most Common**: Ensure you've manually synced the Knowledge Base data source (see "Uploading Documents" section above)
+- **Verify Processing Completed**: Check S3 bucket `output/processed-text/` folder to confirm JSON files were created
+- If no files in `output/processed-text/`, check Step Functions in AWS Console for processing errors
+- Wait 10-15 minutes for document processing and indexing after syncing
+- Verify the document was uploaded successfully (check S3 `input/` folder)
 - Ensure the document format is supported (PDF, PNG, JPG, TIFF)
+- Check the Knowledge Base sync job status in AWS Bedrock Console - it must show "Ready" status
 
 ---
 
