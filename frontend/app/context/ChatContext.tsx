@@ -32,29 +32,7 @@ interface ChatProviderProps {
 
 export const ChatProvider = ({ children }: ChatProviderProps) => {
   const [conversation, setConversation] = useState<Conversation | null>(() => {
-    // Try to restore conversation from localStorage
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('ymca-conversation');
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          // Convert date strings back to Date objects
-          return {
-            ...parsed,
-            createdAt: new Date(parsed.createdAt),
-            updatedAt: new Date(parsed.updatedAt),
-            messages: parsed.messages.map((msg: any) => ({
-              ...msg,
-              timestamp: new Date(msg.timestamp),
-            })),
-          };
-        } catch (e) {
-          console.error('Failed to parse saved conversation:', e);
-        }
-      }
-    }
-
-    // Initialize with a new conversation
+    // Initialize with a new conversation (localStorage restoration happens in useEffect below)
     return {
       id: generateSessionId(),
       sessionId: generateSessionId(),
@@ -67,13 +45,42 @@ export const ChatProvider = ({ children }: ChatProviderProps) => {
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
 
-  // Persist conversation to localStorage whenever it changes
+  // Restore conversation from localStorage on client-side mount only
   useEffect(() => {
-    if (conversation && typeof window !== 'undefined') {
-      localStorage.setItem('ymca-conversation', JSON.stringify(conversation));
+    if (!isHydrated) {
+      try {
+        const saved = localStorage.getItem('ymca-conversation');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setConversation({
+            ...parsed,
+            createdAt: new Date(parsed.createdAt),
+            updatedAt: new Date(parsed.updatedAt),
+            messages: parsed.messages.map((msg: any) => ({
+              ...msg,
+              timestamp: new Date(msg.timestamp),
+            })),
+          });
+        }
+      } catch (e) {
+        console.error('Failed to restore conversation:', e);
+      }
+      setIsHydrated(true);
     }
-  }, [conversation]);
+  }, [isHydrated]);
+
+  // Persist conversation to localStorage whenever it changes (only after hydration)
+  useEffect(() => {
+    if (isHydrated && conversation) {
+      try {
+        localStorage.setItem('ymca-conversation', JSON.stringify(conversation));
+      } catch (e) {
+        console.error('Failed to save conversation:', e);
+      }
+    }
+  }, [conversation, isHydrated]);
 
   const addUserMessage = useCallback((content: string): string => {
     const messageId = generateMessageId();

@@ -29,11 +29,7 @@ import {
   WhyItMatteredIcon,
   LessonsIcon,
   MomentTeachesIcon,
-  SourcesIcon,
-  ShieldIcon,
-  SparklesIcon,
-  UsersIcon,
-  LightbulbIcon
+  SourcesIcon
 } from '../../lib/icons';
 
 
@@ -354,42 +350,6 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
   return null;
 };
 
-// Starter prompts data with translation keys
-const getStarterPrompts = () => [
-  {
-    id: 'crisis',
-    titleKey: 'starterCrisisTitle',
-    descKey: 'starterCrisisDesc',
-    icon: ShieldIcon,
-    color: '#EE3124',
-    prompt: 'Tell me about how the YMCA responded during times of crisis in history'
-  },
-  {
-    id: 'youth',
-    titleKey: 'starterYouthTitle',
-    descKey: 'starterYouthDesc',
-    icon: SparklesIcon,
-    color: '#00AEEF',
-    prompt: 'How did YMCA youth programs evolve through the decades?'
-  },
-  {
-    id: 'leadership',
-    titleKey: 'starterLeadershipTitle',
-    descKey: 'starterLeadershipDesc',
-    icon: UsersIcon,
-    color: '#92278F',
-    prompt: 'Share stories about YMCA leadership and social responsibility'
-  },
-  {
-    id: 'innovation',
-    titleKey: 'starterInnovationTitle',
-    descKey: 'starterInnovationDesc',
-    icon: LightbulbIcon,
-    color: '#FDB913',
-    prompt: 'What innovations did the YMCA introduce throughout its history?'
-  }
-];
-
 /**
  * Main Chat Page Component
  */
@@ -447,12 +407,6 @@ export default function ChatPage() {
     }
   };
 
-  const handleStarterPromptClick = (prompt: string) => {
-    if (!isLoading) {
-      sendMessage(prompt);
-    }
-  };
-
   // Don't render until authorization check is complete
   if (!isAuthorized) {
     return null;
@@ -480,86 +434,6 @@ export default function ChatPage() {
       {/* Chat Messages Container */}
       <div className="flex-1 content-stretch flex flex-col items-center relative shrink-0 w-full overflow-y-auto">
         <div className="content-stretch flex flex-col gap-[40px] items-start max-w-[1240px] px-[24px] py-[64px] relative shrink-0 w-full">
-
-          {/* Welcome Message with Starter Prompts */}
-          {(!conversation?.messages || conversation.messages.length === 0) && (
-            <div className={cn("content-stretch flex flex-col items-center gap-[64px] relative shrink-0 w-full")}>
-              {/* Heading */}
-              <div className={cn("content-stretch flex flex-col gap-[16px] items-center not-italic relative shrink-0 text-center")}>
-                <h1 className={cn("font-cachet font-bold leading-normal relative shrink-0 text-[#231f20] text-[48px]")}>
-                  {t('welcomeTitle')}
-                </h1>
-                <p className={cn("font-verdana font-normal leading-[1.5] relative shrink-0 text-[#484848] text-[20px] max-w-[800px]")}>
-                  {t('welcomeSubtitle')}
-                </p>
-              </div>
-
-              {/* Starter Prompt Cards */}
-              <div className="content-stretch flex flex-col gap-[24px] items-start relative shrink-0 w-full">
-                {/* First Row */}
-                <div className="content-stretch flex gap-[24px] items-start relative shrink-0 w-full">
-                  {getStarterPrompts().slice(0, 2).map((prompt) => {
-                    const IconComponent = prompt.icon;
-                    return (
-                      <button
-                        key={prompt.id}
-                        onClick={() => handleStarterPromptClick(prompt.prompt)}
-                        className={cn("basis-0 bg-white border border-[#d1d5dc] border-solid content-stretch flex grow items-center min-h-px min-w-px px-[16px] py-[16px] relative rounded-[12px] shrink-0 transition-colors cursor-pointer")}
-                        style={{ '--hover-color': prompt.color } as React.CSSProperties}
-                        onMouseEnter={(e) => e.currentTarget.style.borderColor = prompt.color}
-                        onMouseLeave={(e) => e.currentTarget.style.borderColor = '#d1d5dc'}
-                      >
-                        <div className={cn("basis-0 content-stretch flex flex-col gap-[12px] grow items-start min-h-px min-w-px relative shrink-0")}>
-                          <div className={cn("content-stretch flex gap-[8px] items-center relative shrink-0 w-full")}>
-                            <div className="relative shrink-0 size-[40px]">
-                              <IconComponent />
-                            </div>
-                            <p className={cn("font-cachet basis-0 font-medium grow leading-[20px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
-                              {t(prompt.titleKey)}
-                            </p>
-                          </div>
-                          <p className={cn("font-verdana font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full")}>
-                            {t(prompt.descKey)}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Second Row */}
-                <div className="content-stretch flex gap-[24px] items-start relative shrink-0 w-full">
-                  {getStarterPrompts().slice(2, 4).map((prompt) => {
-                    const IconComponent = prompt.icon;
-                    return (
-                      <button
-                        key={prompt.id}
-                        onClick={() => handleStarterPromptClick(prompt.prompt)}
-                        className={cn("basis-0 bg-white border border-[#d1d5dc] border-solid content-stretch flex flex-col grow items-start min-h-px min-w-px relative rounded-[12px] shrink-0 transition-colors cursor-pointer")}
-                        style={{ '--hover-color': prompt.color } as React.CSSProperties}
-                        onMouseEnter={(e) => e.currentTarget.style.borderColor = prompt.color}
-                        onMouseLeave={(e) => e.currentTarget.style.borderColor = '#d1d5dc'}
-                      >
-                        <div className={cn("content-stretch flex flex-col gap-[12px] items-start p-[16px] relative shrink-0 w-full")}>
-                          <div className={cn("content-stretch flex gap-[8px] items-center relative shrink-0 w-full")}>
-                            <div className="relative shrink-0 size-[40px]">
-                              <IconComponent />
-                            </div>
-                            <p className={cn("font-cachet basis-0 font-medium grow leading-[20px] min-h-px min-w-px not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
-                              {t(prompt.titleKey)}
-                            </p>
-                          </div>
-                          <p className={cn("font-verdana font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full")}>
-                            {t(prompt.descKey)}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Messages */}
           {conversation?.messages.map((message) => (
