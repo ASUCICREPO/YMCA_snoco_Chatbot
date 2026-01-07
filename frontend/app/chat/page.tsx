@@ -400,6 +400,15 @@ export default function ChatPage() {
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Redirect to home if user tries to access /chat directly without a conversation
+  useEffect(() => {
+    // Check if there's no conversation or no messages
+    if (!conversation || !conversation.messages || conversation.messages.length === 0) {
+      // Redirect to home page
+      router.push('/');
+    }
+  }, [conversation, router]);
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
