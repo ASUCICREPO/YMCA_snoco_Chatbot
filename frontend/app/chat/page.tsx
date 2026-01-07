@@ -8,6 +8,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 import ReactMarkdown from 'react-markdown';
@@ -49,6 +50,7 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [displayedText, setDisplayedText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout>>(null);
 
   // Typing effect for streaming messages
   useEffect(() => {
@@ -58,6 +60,12 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
 
       if (narrative && narrative !== displayedText) {
         setIsTyping(true);
+
+        // Clear any existing timeout to prevent overlapping loops
+        if (typingTimeoutRef.current) {
+          clearTimeout(typingTimeoutRef.current);
+        }
+
         let currentIndex = displayedText.length;
 
         const typeNextChar = () => {
@@ -66,7 +74,7 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
             currentIndex++;
             // Vary typing speed for more natural feel
             const delay = Math.random() * 30 + 10;
-            setTimeout(typeNextChar, delay);
+            typingTimeoutRef.current = setTimeout(typeNextChar, delay);
           } else {
             setIsTyping(false);
           }
@@ -81,7 +89,14 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
       setDisplayedText(narrative);
       setIsTyping(false);
     }
-  }, [message.content, message.isStreaming, message.role, displayedText]);
+
+    // Cleanup timeout on unmount or when dependencies change
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, [message.content, message.isStreaming, message.role]);
 
   if (message.role === 'user') {
     return (
@@ -158,35 +173,35 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
             <div className={cn("border-[#0089d0] border-[0px_0px_0px_4px] border-solid content-stretch flex flex-col items-start p-[24px] relative rounded-br-[12px] rounded-tr-[12px] shrink-0 w-full")} style={{ backgroundImage: "linear-gradient(165.964deg, rgba(255, 255, 255, 0.05) 0%, rgba(0, 137, 208, 0.05) 100%)" }}>
               <div className="content-stretch flex flex-col gap-[16px] items-start relative shrink-0 w-full">
                 {story.timeline && (
-                  <div className="content-stretch flex gap-[8px] items-start relative shrink-0">
+                  <div className="content-stretch flex gap-[8px] items-start relative w-full">
                     <div className="relative shrink-0 size-[16px] text-[#f47920] mt-[2px]">
                       <CalendarIcon className="w-full h-full" />
                     </div>
-                    <div className="content-stretch flex flex-col items-start relative shrink-0">
+                    <div className="content-stretch flex flex-col items-start relative flex-1 min-w-0">
                       <p className="relative shrink-0 text-[#636466] text-[14px] font-medium uppercase tracking-wide">Timeline</p>
-                      <p className="relative shrink-0 text-[#231f20] text-[16px]">{story.timeline}</p>
+                      <p className="relative w-full text-[#231f20] text-[16px] break-words">{story.timeline}</p>
                     </div>
                   </div>
                 )}
                 {story.locations && (
-                  <div className="content-stretch flex gap-[8px] items-start relative shrink-0">
+                  <div className="content-stretch flex gap-[8px] items-start relative w-full">
                     <div className="relative shrink-0 size-[16px] text-[#01a490] mt-[2px]">
                       <LocationIcon className="w-full h-full" />
                     </div>
-                    <div className="content-stretch flex flex-col items-start relative shrink-0">
+                    <div className="content-stretch flex flex-col items-start relative flex-1 min-w-0">
                       <p className="relative shrink-0 text-[#636466] text-[14px] font-medium uppercase tracking-wide">Locations</p>
-                      <p className="relative shrink-0 text-[#231f20] text-[16px]">{story.locations}</p>
+                      <p className="relative w-full text-[#231f20] text-[16px] break-words">{story.locations}</p>
                     </div>
                   </div>
                 )}
                 {story.keyPeople && (
-                  <div className="content-stretch flex gap-[8px] items-start relative shrink-0">
+                  <div className="content-stretch flex gap-[8px] items-start relative w-full">
                     <div className="relative shrink-0 size-[16px] text-[#92278f] mt-[2px]">
                       <KeyPeopleIcon className="w-full h-full" />
                     </div>
-                    <div className="content-stretch flex flex-col items-start relative shrink-0">
+                    <div className="content-stretch flex flex-col items-start relative flex-1 min-w-0">
                       <p className="relative shrink-0 text-[#636466] text-[14px] font-medium uppercase tracking-wide">Key People</p>
-                      <p className="relative shrink-0 text-[#231f20] text-[16px]">{story.keyPeople}</p>
+                      <p className="relative w-full text-[#231f20] text-[16px] break-words">{story.keyPeople}</p>
                     </div>
                   </div>
                 )}
@@ -321,9 +336,9 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
                   <button
                     key={index}
                     onClick={() => onSuggestionClick?.(suggestion)}
-                    className={cn("bg-[rgba(0,137,208,0.1)] border border-[rgba(0,137,208,0.3)] border-solid content-stretch flex gap-[8px] items-center px-[21px] py-[12px] relative rounded-[100px] shrink-0 hover:bg-[rgba(0,137,208,0.2)] transition-colors cursor-pointer")}
+                    className={cn("bg-[rgba(0,137,208,0.1)] border border-[rgba(0,137,208,0.3)] border-solid content-stretch flex gap-[8px] items-center px-[21px] py-[12px] relative rounded-[20px] max-w-full hover:bg-[rgba(0,137,208,0.2)] transition-colors cursor-pointer text-left")}
                   >
-                    <p className="font-normal leading-[20px] not-italic text-[#231f20] text-[14px]">
+                    <p className="font-normal leading-[20px] not-italic text-[#231f20] text-[14px] break-words whitespace-normal">
                       {suggestion}
                     </p>
                   </button>
@@ -379,6 +394,7 @@ const getStarterPrompts = () => [
  * Main Chat Page Component
  */
 export default function ChatPage() {
+  const router = useRouter();
   const { t } = useTranslation();
   const { sendMessage, isLoading, conversation } = useChat();
   const [inputValue, setInputValue] = useState('');
@@ -428,12 +444,12 @@ export default function ChatPage() {
           <Link href="/" className="h-[72px] w-[94.161px] relative shrink-0 cursor-pointer hover:opacity-80 transition-opacity p-[8px] -m-[8px]">
             <Image alt="YMCA Logo" className="object-contain" src="/logo.png" fill />
           </Link>
-          <Link
-            href="/"
+          <button
+            onClick={() => router.push('/')}
             className="bg-[#0089d0] text-white px-[24px] py-[12px] rounded-[100px] font-medium text-[16px] hover:bg-[#0077b8] transition-colors cursor-pointer"
           >
             Home
-          </Link>
+          </button>
         </div>
       </div>
 
