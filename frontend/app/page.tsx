@@ -100,48 +100,66 @@ export default function Home() {
           <div className={cn("h-[72px] w-[94.161px] relative shrink-0")}>
             <Image alt="YMCA Logo" className="object-contain" src={ymcaLogo} fill />
           </div>
-          <div className="relative language-selector">
+          <div className="flex gap-[12px] items-center">
+            {/* Admin Button */}
             <button
               type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setLanguageDropdownOpen(!languageDropdownOpen);
-              }}
-              className="bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center px-[16px] py-[12px] relative rounded-[12px] shrink-0 hover:border-[#0089d0] transition-colors cursor-pointer"
+              onClick={() => router.push('/admin')}
+              className="bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center px-[16px] py-[12px] relative rounded-[12px] shrink-0 hover:border-[#92278F] hover:text-[#92278F] transition-colors cursor-pointer"
             >
-              <div className="relative shrink-0 size-[20px] text-[#636466]">
-                <Image src="/globeicon.svg" alt="Globe icon" width={20} height={20} />
-              </div>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative shrink-0">
+                <path d="M10 10C12.7614 10 15 7.76142 15 5C15 2.23858 12.7614 0 10 0C7.23858 0 5 2.23858 5 5C5 7.76142 7.23858 10 10 10Z" fill="currentColor" />
+                <path d="M10 12.5C5.16667 12.5 1.25 14.4583 1.25 16.875V20H18.75V16.875C18.75 14.4583 14.8333 12.5 10 12.5Z" fill="currentColor" />
+              </svg>
               <p className="font-medium leading-[24px] not-italic relative shrink-0 text-[#231f20] text-[16px] text-center text-nowrap">
-                {SUPPORTED_LANGUAGES.find(lang => lang.code === selectedLanguage)?.name || 'English'}
+                Are you an Admin?
               </p>
-              <div className={cn("relative shrink-0 size-[24px] text-[#636466] transition-transform", languageDropdownOpen && "rotate-180")}>
-                <ChevronDownIcon />
-              </div>
             </button>
 
-            {languageDropdownOpen && (
-              <div className="absolute right-0 top-full mt-[8px] bg-white border border-[#d1d5dc] rounded-[12px] shadow-lg overflow-hidden z-50 min-w-[200px]">
-                {SUPPORTED_LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.code}
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleLanguageChange(lang.code);
-                    }}
-                    className={cn(
-                      "w-full text-left px-[16px] py-[12px] hover:bg-[#f9fafb] transition-colors cursor-pointer",
-                      selectedLanguage === lang.code && "bg-[#E1F4FA] text-[#0089d0] font-medium"
-                    )}
-                  >
-                    {lang.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* Language Selector */}
+            <div className="relative language-selector">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setLanguageDropdownOpen(!languageDropdownOpen);
+                }}
+                className="bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center px-[16px] py-[12px] relative rounded-[12px] shrink-0 hover:border-[#0089d0] transition-colors cursor-pointer"
+              >
+                <div className="relative shrink-0 size-[20px] text-[#636466]">
+                  <Image src="/globeicon.svg" alt="Globe icon" width={20} height={20} />
+                </div>
+                <p className="font-medium leading-[24px] not-italic relative shrink-0 text-[#231f20] text-[16px] text-center text-nowrap">
+                  {SUPPORTED_LANGUAGES.find(lang => lang.code === selectedLanguage)?.name || 'English'}
+                </p>
+                <div className={cn("relative shrink-0 size-[24px] text-[#636466] transition-transform", languageDropdownOpen && "rotate-180")}>
+                  <ChevronDownIcon />
+                </div>
+              </button>
+
+              {languageDropdownOpen && (
+                <div className="absolute right-0 top-full mt-[8px] bg-white border border-[#d1d5dc] rounded-[12px] shadow-lg overflow-hidden z-50 min-w-[200px]">
+                  {SUPPORTED_LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.code}
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleLanguageChange(lang.code);
+                      }}
+                      className={cn(
+                        "w-full text-left px-[16px] py-[12px] hover:bg-[#f9fafb] transition-colors cursor-pointer",
+                        selectedLanguage === lang.code && "bg-[#E1F4FA] text-[#0089d0] font-medium"
+                      )}
+                    >
+                      {lang.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
