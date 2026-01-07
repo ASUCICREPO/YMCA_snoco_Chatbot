@@ -206,7 +206,9 @@ export class YmcaAiStack extends cdk.Stack {
               resources: [
                 `arn:aws:bedrock:${this.region}::foundation-model/*`, // Region-specific foundation models
                 `arn:aws:bedrock:us-west-2::foundation-model/*`, // Cross-region for us-west-2 models
+                `arn:aws:bedrock:us-east-1::foundation-model/*`, // Cross-region for us-east-1 models (Nova)
                 `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+                `arn:aws:bedrock:*::foundation-model/amazon.nova-*`, // Nova models in any region
               ],
             }),
             new iam.PolicyStatement({
@@ -266,8 +268,8 @@ export class YmcaAiStack extends cdk.Stack {
         CONVERSATION_TABLE_NAME: conversationTable.tableName,
         ANALYTICS_TABLE_NAME: analyticsTable.tableName,
         DOCUMENTS_BUCKET: documentsBucket.bucketName,
-        KNOWLEDGE_BASE_ID: process.env.KB_ID || '',
-        REGION: process.env.AWS_REGION || this.region,
+        KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+        REGION: this.region,
       },
     });
 
@@ -284,8 +286,8 @@ export class YmcaAiStack extends cdk.Stack {
         CONVERSATION_TABLE_NAME: conversationTable.tableName,
         ANALYTICS_TABLE_NAME: analyticsTable.tableName,
         DOCUMENTS_BUCKET: documentsBucket.bucketName,
-        KNOWLEDGE_BASE_ID: process.env.KB_ID || '',
-        REGION: process.env.AWS_REGION || this.region,
+        KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+        REGION: this.region,
       },
     });
 
