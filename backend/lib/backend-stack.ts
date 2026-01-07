@@ -362,7 +362,7 @@ export class YmcaAiStack extends cdk.Stack {
     // Cognito User Pool for Admin Authentication
     const userPool = new cognito.UserPool(this, 'YmcaAdminUserPoolV2', {
       userPoolName: 'ymca-admin-user-pool-v2',
-      selfSignUpEnabled: false, // Only admins can create users
+      selfSignUpEnabled: true, // Allow users to sign up
       signInAliases: { email: true },
       autoVerify: { email: true },
       passwordPolicy: {
@@ -381,6 +381,44 @@ export class YmcaAiStack extends cdk.Stack {
       generateSecret: false, // Web clients can't handle secrets
       authFlows: {
         userSrp: true,
+      },
+    });
+
+    // Cognito Identity Pool for AWS credentials
+    const identityPool = new cognito.CfnIdentityPool(this, 'YmcaAdminIdentityPool', {
+      identityPoolName: 'ymca-admin-identity-pool',
+      allowUnauthenticatedIdentities: false,
+      cognitoIdentityProviders: [{
+        clientId: userPoolClient.userPoolClientId,
+        providerName: userPool.userPoolProviderName,
+      }],
+    });
+
+    // IAM Role for authenticated users
+    const authenticatedRole = new iam.Role(this, 'YmcaAdminAuthenticatedRole', {
+      assumedBy: new iam.FederatedPrincipal(
+        'cognito-identity.amazonaws.com',
+        {
+          StringEquals: {
+            'cognito-identity.amazonaws.com:aud': identityPool.ref,
+          },
+          'ForAnyValue:StringLike': {
+            'cognito-identity.amazonaws.com:amr': 'authenticated',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity'
+      ),
+    });
+
+    // Grant DynamoDB read access to authenticated users
+    analyticsTable.grantReadData(authenticatedRole);
+    conversationTable.grantReadData(authenticatedRole);
+
+    // Attach role to identity pool
+    new cognito.CfnIdentityPoolRoleAttachment(this, 'YmcaIdentityPoolRoleAttachment', {
+      identityPoolId: identityPool.ref,
+      roles: {
+        authenticated: authenticatedRole.roleArn,
       },
     });
 
@@ -586,6 +624,12 @@ export class YmcaAiStack extends cdk.Stack {
       exportName: `${this.stackName}-UserPoolClientId`,
     });
 
+    new cdk.CfnOutput(this, 'IdentityPoolId', {
+      value: identityPool.ref,
+      description: 'Cognito Identity Pool ID for AWS credentials',
+      exportName: `${this.stackName}-IdentityPoolId`,
+    });
+
 
     // ========================================================================
     // AMPLIFY FRONTEND DEPLOYMENT
@@ -639,6 +683,7 @@ export class YmcaAiStack extends cdk.Stack {
       mainBranch.addEnvironment('NEXT_PUBLIC_STREAMING_ENDPOINT', streamingFunctionUrl.url);
       mainBranch.addEnvironment('NEXT_PUBLIC_USER_POOL_ID', userPool.userPoolId);
       mainBranch.addEnvironment('NEXT_PUBLIC_USER_POOL_CLIENT_ID', userPoolClient.userPoolClientId);
+      mainBranch.addEnvironment('NEXT_PUBLIC_IDENTITY_POOL_ID', identityPool.ref);
       mainBranch.addEnvironment('NEXT_PUBLIC_REGION', this.region);
       mainBranch.addEnvironment('NEXT_PUBLIC_AWS_REGION', this.region);
       mainBranch.addEnvironment('NEXT_PUBLIC_ANALYTICS_TABLE_NAME', analyticsTable.tableName);
@@ -682,21 +727,21 @@ export class YmcaAiStack extends cdk.Stack {
       });
     }
 
-//     new cdk.CfnOutput(this, 'PostDeploymentInstructions', {
-//       value: `
+    //     new cdk.CfnOutput(this, 'PostDeploymentInstructions', {
+    //       value: `
 
-// 2. Admin User Setup:
-//    - Go to AWS Console > Cognito > User pools > ymca-admin-user-pool
-//    - Create a new user (email/password)
-//    - Mark email as verified
-//    - This user will be able to access the Admin Dashboard
+    // 2. Admin User Setup:
+    //    - Go to AWS Console > Cognito > User pools > ymca-admin-user-pool
+    //    - Create a new user (email/password)
+    //    - Mark email as verified
+    //    - This user will be able to access the Admin Dashboard
 
-// 3. GitHub Configuration (for Amplify):
-//    - Ensure GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO are set in backend/.env
-//    - GITHUB_TOKEN must be a Personal Access Token with 'repo' and 'admin:repo_hook' scopes
-//       `,
-//       description: 'Post-deployment setup instructions',
-//     });
+    // 3. GitHub Configuration (for Amplify):
+    //    - Ensure GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO are set in backend/.env
+    //    - GITHUB_TOKEN must be a Personal Access Token with 'repo' and 'admin:repo_hook' scopes
+    //       `,
+    //       description: 'Post-deployment setup instructions',
+    //     });
   }
 
   private createDocumentProcessingWorkflow(
