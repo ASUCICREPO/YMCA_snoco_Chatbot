@@ -31,7 +31,7 @@ interface AnalyticsData {
     uniqueUsers: number;
     totalConversations: number;
   };
-  trendingTopics: Array<{ topic: string; count: number }>;
+  topicDistribution: Array<{ category: string; count: number; percentage: number }>;
   usageTimeline: Array<{ date: string; count: number }>;
   recentQueries: Array<{
     timestamp: string;
@@ -39,6 +39,7 @@ interface AnalyticsData {
     language: string;
     citations: number;
     processingTime: number;
+    category?: string;
   }>;
   timeRange: string;
 }
@@ -119,19 +120,21 @@ export default function AdminDashboard() {
         stats.languageBreakdown[lang] = (stats.languageBreakdown[lang] || 0) + 1;
       });
 
-      // Extract trending topics
-      const queryTexts = conversations.map((c) => c.userMessage?.toLowerCase() || '');
-      const wordCounts: Record<string, number> = {};
-      queryTexts.forEach((text: string) => {
-        text.split(/\s+/).filter((w: string) => w.length > 4).forEach((word: string) => {
-          wordCounts[word] = (wordCounts[word] || 0) + 1;
-        });
+      // Aggregate topic distribution by category
+      const categoryCounts: Record<string, number> = {};
+      analytics.forEach((item) => {
+        const category = item.category || 'General/Other Questions';
+        categoryCounts[category] = (categoryCounts[category] || 0) + 1;
       });
 
-      const trendingTopics = Object.entries(wordCounts)
+      const totalCategorized = Object.values(categoryCounts).reduce((sum, count) => sum + count, 0);
+      const topicDistribution = Object.entries(categoryCounts)
         .sort(([, a], [, b]) => b - a)
-        .slice(0, 20)
-        .map(([word, count]) => ({ topic: word, count }));
+        .map(([category, count]) => ({
+          category,
+          count,
+          percentage: totalCategorized > 0 ? (count / totalCategorized) * 100 : 0
+        }));
 
       // Usage over time
       const usageByDay: Record<string, number> = {};
@@ -144,19 +147,27 @@ export default function AdminDashboard() {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([date, count]) => ({ date, count }));
 
-      // Recent queries
+      // Recent queries (match with analytics for category info)
       const recentQueries = conversations
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, 10)
-        .map((c) => ({
-          timestamp: new Date(c.timestamp).toISOString(),
-          query: c.userMessage,
-          language: c.userLanguage,
-          citations: c.citationsCount || 0,
-          processingTime: c.processingTimeMs,
-        }));
+        .map((c) => {
+          // Try to find matching analytics entry for category
+          const matchingAnalytics = analytics.find(
+            (a) => a.conversationId === c.conversationId &&
+                   Math.abs(a.timestamp - c.timestamp) < 1000
+          );
+          return {
+            timestamp: new Date(c.timestamp).toISOString(),
+            query: c.userMessage,
+            language: c.userLanguage,
+            citations: c.citationsCount || 0,
+            processingTime: c.processingTimeMs,
+            category: matchingAnalytics?.category || undefined,
+          };
+        });
 
-      setData({ stats, trendingTopics, usageTimeline, recentQueries, timeRange: range });
+      setData({ stats, topicDistribution, usageTimeline, recentQueries, timeRange: range });
     } catch (err) {
       console.error('Failed to fetch analytics:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch analytics');
@@ -282,20 +293,35 @@ export default function AdminDashboard() {
                   />
                 </div>
 
-                {/* Trending Topics */}
+                {/* Topic Distribution */}
                 <div className="bg-white rounded-[12px] shadow-sm border border-[#d1d5dc] p-6 mb-8">
-                  <h2 className="text-xl font-bold text-[#231f20] mb-4">Trending Topics</h2>
-                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                    {data.trendingTopics.map((topic, index) => (
-                      <div
-                        key={index}
-                        className="bg-gray-50 rounded-[12px] p-3 border border-gray-200"
-                      >
-                        <p className="text-sm font-medium text-[#231f20] truncate">{topic.topic}</p>
-                        <p className="text-xs text-[#636466] mt-1">{topic.count} mentions</p>
+                  <h2 className="text-xl font-bold text-[#231f20] mb-4">Topic Distribution</h2>
+                  <div className="space-y-4">
+                    {data.topicDistribution.map((topic, index) => (
+                      <div key={index} className="space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-medium text-[#231f20]">{topic.category}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm text-[#636466]">{topic.count} queries</span>
+                            <span className="text-sm font-medium text-[#0089d0]">
+                              {topic.percentage.toFixed(1)}%
+                            </span>
+                          </div>
+                        </div>
+                        <div className="w-full bg-gray-100 rounded-full h-2.5">
+                          <div
+                            className="bg-[#0089d0] h-2.5 rounded-full transition-all duration-300"
+                            style={{ width: `${topic.percentage}%` }}
+                          ></div>
+                        </div>
                       </div>
                     ))}
                   </div>
+                  {data.topicDistribution.length === 0 && (
+                    <p className="text-center text-[#636466] py-4">
+                      No topic data available yet. Categories will appear as users interact with the chatbot.
+                    </p>
+                  )}
                 </div>
 
                 {/* Recent Queries */}
@@ -308,7 +334,14 @@ export default function AdminDashboard() {
                         className="border-b border-gray-100 pb-4 last:border-0 last:pb-0"
                       >
                         <div className="flex justify-between items-start mb-2">
-                          <p className="text-[#231f20] font-medium flex-1 mr-4">{query.query}</p>
+                          <div className="flex-1 mr-4">
+                            <p className="text-[#231f20] font-medium mb-1">{query.query}</p>
+                            {query.category && (
+                              <span className="inline-block bg-[#0089d0] bg-opacity-10 text-[#0089d0] text-xs px-2 py-1 rounded-full">
+                                {query.category}
+                              </span>
+                            )}
+                          </div>
                           <span className="text-xs text-[#636466] whitespace-nowrap">
                             {new Date(query.timestamp).toLocaleString()}
                           </span>

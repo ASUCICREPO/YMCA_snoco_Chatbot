@@ -19,6 +19,20 @@ const CONVERSATION_TABLE = process.env.CONVERSATION_TABLE_NAME;
 const ANALYTICS_TABLE = process.env.ANALYTICS_TABLE_NAME;
 const DOCUMENTS_BUCKET = process.env.DOCUMENTS_BUCKET;
 
+// Topic Categories for categorization
+const TOPIC_CATEGORIES = [
+  'Early History & Founding',
+  'Community Programs & Services',
+  'Youth & Education Programs',
+  'Global Impact & International Work',
+  'Modern YMCA & Current Services',
+  'War Efforts & Historical Events',
+  'Sports & Recreation',
+  'Health & Wellness',
+  'Social Justice & Equity',
+  'General/Other Questions'
+];
+
 // Supported languages for YMCA multilingual support
 const SUPPORTED_LANGUAGES = {
   'en': 'English',
@@ -356,11 +370,75 @@ async function translateResponse(ragResponse, originalLanguage) {
 }
 
 /**
+ * Categorize query using Bedrock (async, non-blocking)
+ */
+async function categorizeQuery(queryInEnglish) {
+  try {
+    const categorizationPrompt = `You are a topic categorization assistant for a YMCA historical chatbot.
+
+Your task is to categorize the following user query into ONE of these predefined categories:
+
+${TOPIC_CATEGORIES.map((cat, idx) => `${idx + 1}. ${cat}`).join('\n')}
+
+User Query: "${queryInEnglish}"
+
+Analyze the query and respond with ONLY the category name (exactly as listed above) that best matches the query's topic. Do not include any explanation or additional text.
+
+Category:`;
+
+    const categorizeCommand = new InvokeModelWithResponseStreamCommand({
+      modelId: 'us.amazon.nova-pro-v1:0',
+      body: JSON.stringify({
+        messages: [{
+          role: 'user',
+          content: [{ text: categorizationPrompt }]
+        }],
+        inferenceConfig: {
+          maxTokens: 100,
+          temperature: 0.1 // Low temperature for consistent categorization
+        }
+      })
+    });
+
+    const streamResult = await bedrockRuntimeClient.send(categorizeCommand);
+    let categoryText = '';
+
+    // Process stream chunks
+    for await (const chunk of streamResult.body) {
+      if (chunk.chunk?.bytes) {
+        const chunkText = new TextDecoder().decode(chunk.chunk.bytes);
+        try {
+          const chunkJson = JSON.parse(chunkText);
+          if (chunkJson.contentBlockDelta?.delta?.text) {
+            categoryText += chunkJson.contentBlockDelta.delta.text;
+          }
+        } catch (parseError) {
+          // Ignore parsing errors for categorization
+        }
+      }
+    }
+
+    // Clean up the response and match to a valid category
+    const cleanedCategory = categoryText.trim();
+    const matchedCategory = TOPIC_CATEGORIES.find(cat =>
+      cleanedCategory.includes(cat) || cat.includes(cleanedCategory)
+    );
+
+    const finalCategory = matchedCategory || 'General/Other Questions';
+    console.log(`Query categorized as: ${finalCategory}`);
+    return finalCategory;
+  } catch (error) {
+    console.warn('Query categorization failed:', error);
+    return 'General/Other Questions'; // Default category on error
+  }
+}
+
+/**
  * Store conversation and analytics in DynamoDB
  */
 async function storeConversationData(conversationId, sessionId, userId, message, originalLanguage,
                                      queryInEnglish, finalResponse, ragResponse, citations,
-                                     timestamp, processingTime) {
+                                     timestamp, processingTime, category) {
   // Store conversation
   try {
     await dynamoClient.send(new PutCommand({
@@ -397,6 +475,7 @@ async function storeConversationData(conversationId, sessionId, userId, message,
         sessionId: sessionId,
         conversationId: conversationId || sessionId,
         language: originalLanguage,
+        category: category || 'General/Other Questions', // Add category field
         queryLength: message.length,
         responseLength: JSON.stringify(finalResponse.content).length,
         processingTimeMs: processingTime,
@@ -464,15 +543,18 @@ async function processRequest(event, streamWriter = null) {
   // Step 1: Translate query to English
   const { queryInEnglish, originalLanguage } = await translateToEnglish(message, language);
 
+  // Step 2: Start categorization (async, non-blocking)
+  const categorizationPromise = categorizeQuery(queryInEnglish);
+
   let ragResponse;
   let citations = [];
 
   try {
-    // Step 2: Retrieve context from Knowledge Base
+    // Step 3: Retrieve context from Knowledge Base
     const { citations: retrievedCitations, retrievedContext } = await retrieveKnowledgeBaseContext(queryInEnglish);
     citations = retrievedCitations;
 
-    // Step 3: Generate AI response
+    // Step 4: Generate AI response
     ragResponse = await generateAIResponse(retrievedContext, queryInEnglish, citations, streamWriter);
 
     console.log('RAG response generated successfully');
@@ -485,13 +567,16 @@ async function processRequest(event, streamWriter = null) {
   const ragEndTime = Date.now();
   const processingTime = ragEndTime - ragStartTime;
 
-  // Step 4: Translate response back to original language
+  // Step 5: Translate response back to original language
   const finalResponse = await translateResponse(ragResponse, originalLanguage);
 
-  // Step 5: Store conversation and analytics
+  // Step 6: Wait for categorization to complete
+  const category = await categorizationPromise;
+
+  // Step 7: Store conversation and analytics
   await storeConversationData(
     conversationId, sessionId, userId, message, originalLanguage,
-    queryInEnglish, finalResponse, ragResponse, citations, timestamp, processingTime
+    queryInEnglish, finalResponse, ragResponse, citations, timestamp, processingTime, category
   );
 
   // Return response data
