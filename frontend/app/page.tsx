@@ -168,7 +168,7 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="basis-0 content-stretch flex flex-col grow items-center min-h-px min-w-px relative shrink-0 w-full">
-        <div className="basis-0 content-stretch flex flex-col grow items-center justify-between max-w-[1240px] min-h-px min-w-px px-[24px] py-[64px] relative shrink-0 w-full">
+        <div className="basis-0 content-stretch flex flex-col grow items-center max-w-[1240px] min-h-px min-w-px px-[24px] py-[64px] relative shrink-0 w-full gap-10">
           <div className="content-stretch flex flex-col gap-[64px] items-center relative shrink-0 w-full">
             {/* Heading */}
             <div className={cn("content-stretch flex flex-col gap-[16px] items-center not-italic relative shrink-0 text-center w-full")}>
@@ -263,7 +263,7 @@ export default function Home() {
           </div>
 
           {/* Chat Input */}
-          <div className={cn("content-stretch flex items-start relative shrink-0 w-full")}>
+          <div className={cn("content-stretch flex items-start relative shrink-0 w-full mt-auto")}>
             <div className={cn("basis-0 content-stretch flex flex-col grow items-center min-h-px min-w-px relative shrink-0")}>
               <form onSubmit={handleSubmit} className={cn("bg-white border border-[#d1d5dc] border-solid content-stretch flex gap-[8px] items-center justify-center pl-[24px] pr-[8px] py-[8px] relative rounded-[12px] shrink-0 w-full hover:border-[#00B2A9] transition-colors")}>
                 <input
