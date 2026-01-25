@@ -186,18 +186,18 @@ export default function Home() {
                 {/* Card 1 - Crisis */}
                 <button
                   type="button"
-                  onClick={() => handleStarterPromptClick('Tell me about how the YMCA responded during times of crisis in history')}
-                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-center p-[24px] relative rounded-[12px] hover:border-[#EE3124] transition-colors cursor-pointer h-full gap-[12px]")}
+                  onClick={() => handleStarterPromptClick(t('starterCrisisPrompt'))}
+                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-start p-[24px] relative rounded-[12px] hover:border-[#EE3124] transition-colors cursor-pointer min-h-[160px] gap-[12px]")}
                 >
-                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full")}>
-                    <div className="relative shrink-0 size-[40px] text-[#EE3124]">
+                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full min-h-[48px]")}>
+                    <div className="relative shrink-0 size-[40px] text-[#EE3124] flex-shrink-0">
                       <ShieldIcon />
                     </div>
-                    <p className={cn("font-cachet font-medium leading-[20px] not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
+                    <p className={cn("font-cachet font-medium leading-[1.4] not-italic text-[#231f20] text-[20px] text-center flex-1")}>
                       {t('starterCrisisTitle')}
                     </p>
                   </div>
-                  <p className={cn("font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full text-center")}>
+                  <p className={cn("font-normal leading-[1.5] not-italic text-[#636466] text-[16px] w-full text-center")}>
                     {t('starterCrisisDesc')}
                   </p>
                 </button>
@@ -205,18 +205,18 @@ export default function Home() {
                 {/* Card 2 - Youth Programs */}
                 <button
                   type="button"
-                  onClick={() => handleStarterPromptClick('How did YMCA youth programs evolve through the decades?')}
-                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-center p-[24px] relative rounded-[12px] hover:border-[#00AEEF] transition-colors cursor-pointer h-full gap-[12px]")}
+                  onClick={() => handleStarterPromptClick(t('starterYouthPrompt'))}
+                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-start p-[24px] relative rounded-[12px] hover:border-[#00AEEF] transition-colors cursor-pointer min-h-[160px] gap-[12px]")}
                 >
-                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full")}>
-                    <div className="relative shrink-0 size-[40px] text-[#00AEEF]">
+                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full min-h-[48px]")}>
+                    <div className="relative shrink-0 size-[40px] text-[#00AEEF] flex-shrink-0">
                       <SparklesIcon />
                     </div>
-                    <p className={cn("font-cachet font-medium leading-[20px] not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
+                    <p className={cn("font-cachet font-medium leading-[1.4] not-italic text-[#231f20] text-[20px] text-center flex-1")}>
                       {t('starterYouthTitle')}
                     </p>
                   </div>
-                  <p className={cn("font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full text-center")}>
+                  <p className={cn("font-normal leading-[1.5] not-italic text-[#636466] text-[16px] w-full text-center")}>
                     {t('starterYouthDesc')}
                   </p>
                 </button>
@@ -224,18 +224,18 @@ export default function Home() {
                 {/* Card 3 - Leadership */}
                 <button
                   type="button"
-                  onClick={() => handleStarterPromptClick('Share stories about YMCA leadership and social responsibility')}
-                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-center p-[24px] relative rounded-[12px] hover:border-[#92278F] transition-colors cursor-pointer h-full gap-[12px]")}
+                  onClick={() => handleStarterPromptClick(t('starterLeadershipPrompt'))}
+                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-start p-[24px] relative rounded-[12px] hover:border-[#92278F] transition-colors cursor-pointer min-h-[160px] gap-[12px]")}
                 >
-                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full")}>
-                    <div className="relative shrink-0 size-[40px] text-[#92278F]">
+                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full min-h-[48px]")}>
+                    <div className="relative shrink-0 size-[40px] text-[#92278F] flex-shrink-0">
                       <UsersIcon />
                     </div>
-                    <p className={cn("font-cachet font-medium leading-[20px] not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
+                    <p className={cn("font-cachet font-medium leading-[1.4] not-italic text-[#231f20] text-[20px] text-center flex-1")}>
                       {t('starterLeadershipTitle')}
                     </p>
                   </div>
-                  <p className={cn("font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full text-center")}>
+                  <p className={cn("font-normal leading-[1.5] not-italic text-[#636466] text-[16px] w-full text-center")}>
                     {t('starterLeadershipDesc')}
                   </p>
                 </button>
@@ -243,18 +243,18 @@ export default function Home() {
                 {/* Card 4 - Innovation */}
                 <button
                   type="button"
-                  onClick={() => handleStarterPromptClick('What innovations did the YMCA introduce throughout its history?')}
-                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-center p-[24px] relative rounded-[12px] hover:border-[#FDB913] transition-colors cursor-pointer h-full gap-[12px]")}
+                  onClick={() => handleStarterPromptClick(t('starterInnovationPrompt'))}
+                  className={cn("bg-white border border-[#d1d5dc] border-solid flex flex-col items-center justify-start p-[24px] relative rounded-[12px] hover:border-[#FDB913] transition-colors cursor-pointer min-h-[160px] gap-[12px]")}
                 >
-                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full")}>
-                    <div className="relative shrink-0 size-[40px] text-[#FDB913]">
+                  <div className={cn("flex gap-[8px] items-center justify-center relative shrink-0 w-full min-h-[48px]")}>
+                    <div className="relative shrink-0 size-[40px] text-[#FDB913] flex-shrink-0">
                       <LightbulbIcon />
                     </div>
-                    <p className={cn("font-cachet font-medium leading-[20px] not-italic relative shrink-0 text-[#231f20] text-[20px]")}>
+                    <p className={cn("font-cachet font-medium leading-[1.4] not-italic text-[#231f20] text-[20px] text-center flex-1")}>
                       {t('starterInnovationTitle')}
                     </p>
                   </div>
-                  <p className={cn("font-normal leading-[1.5] not-italic relative shrink-0 text-[#636466] text-[16px] w-full text-center")}>
+                  <p className={cn("font-normal leading-[1.5] not-italic text-[#636466] text-[16px] w-full text-center")}>
                     {t('starterInnovationDesc')}
                   </p>
                 </button>
