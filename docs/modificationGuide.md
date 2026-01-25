@@ -233,9 +233,21 @@ const sentimentFunction = new lambda.Function(this, 'SentimentAnalyzer', {
   }
 });
 
-// Add API endpoint
-const sentimentResource = api.root.addResource('sentiment');
-sentimentResource.addMethod('POST', new apigateway.LambdaIntegration(sentimentFunction));
+// Add Lambda Function URL endpoint
+const sentimentFunctionUrl = sentimentFunction.addFunctionUrl({
+  authType: lambda.FunctionUrlAuthType.NONE,
+  cors: {
+    allowedOrigins: ['*'],
+    allowedMethods: [lambda.HttpMethod.POST],
+    allowedHeaders: ['Content-Type'],
+  },
+});
+
+// Output the URL
+new cdk.CfnOutput(this, 'SentimentFunctionUrl', {
+  value: sentimentFunctionUrl.url,
+  description: 'Sentiment Analyzer Function URL'
+});
 ```
 
 ### Modifying the CDK Stack
@@ -281,38 +293,52 @@ const conversationTable = new dynamodb.Table(this, 'YmcaConversationTable', {
 });
 ```
 
-### Adding New API Endpoints
+### Adding New Lambda Function URLs
 
 **Location**: `backend/lib/backend-stack.ts`
 
-Add a new REST API endpoint:
+This project uses Lambda Function URLs instead of API Gateway for direct HTTPS access to Lambda functions.
+
+**Add a new endpoint:**
 
 ```typescript
-// Create resource
-const customResource = api.root.addResource('custom-endpoint');
-
-// Create Lambda integration
-const customIntegration = new apigateway.LambdaIntegration(customLambdaFunction);
-
-// Add method
-customResource.addMethod('POST', customIntegration);
-
-// Add CORS (already configured globally, but can override)
-customResource.addMethod('OPTIONS', new apigateway.MockIntegration({
-  integrationResponses: [{
-    statusCode: '200',
-    responseParameters: {
-      'method.response.header.Access-Control-Allow-Headers': "'Content-Type,Authorization'",
-      'method.response.header.Access-Control-Allow-Methods': "'GET,POST,OPTIONS'",
-      'method.response.header.Access-Control-Allow-Origin': "'*'"
-    }
-  }],
-  passthroughBehavior: apigateway.PassthroughBehavior.NEVER,
-  requestTemplates: {
-    'application/json': '{"statusCode": 200}'
+// Create the Lambda function
+const customFunction = new lambda.Function(this, 'CustomFunction', {
+  functionName: 'ymca-custom-function',
+  runtime: lambda.Runtime.NODEJS_20_X,
+  handler: 'index.handler',
+  code: lambda.Code.fromAsset('lambda/custom-function'),
+  role: lambdaExecutionRole,
+  timeout: cdk.Duration.seconds(30),
+  memorySize: 256,
+  environment: {
+    REGION: this.region
   }
-}));
+});
+
+// Add Lambda Function URL with CORS
+const customFunctionUrl = customFunction.addFunctionUrl({
+  authType: lambda.FunctionUrlAuthType.NONE, // Public access (or use AWS_IAM for authentication)
+  cors: {
+    allowedOrigins: ['*'], // Restrict to your domain in production
+    allowedMethods: [lambda.HttpMethod.POST, lambda.HttpMethod.GET],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  },
+});
+
+// Output the URL for use in frontend
+new cdk.CfnOutput(this, 'CustomFunctionUrl', {
+  value: customFunctionUrl.url,
+  description: 'Custom Function URL endpoint'
+});
 ```
+
+**Advantages of Lambda Function URLs:**
+- ✅ **Direct invocation** - No API Gateway overhead
+- ✅ **Lower cost** - No API Gateway charges
+- ✅ **15-minute timeout** - vs API Gateway's 30-second limit
+- ✅ **Native streaming support** - Use `RESPONSE_STREAM` invoke mode
+- ✅ **Simpler architecture** - Fewer services to manage
 
 ---
 
@@ -652,16 +678,21 @@ sam local invoke YmcaAgentProxyFunction \
 
 ### Integration Testing
 
-Test API endpoints with curl or Postman:
+Test Lambda Function URLs with curl or Postman:
 
 ```bash
-curl -X POST https://[API_URL]/chat \
+# Test the streaming chat endpoint
+curl -X POST https://[LAMBDA_FUNCTION_URL]/ \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "Test question",
+    "message": "Test question about YMCA history",
+    "conversationId": "test-123",
     "language": "en"
-  }'
+  }' \
+  --no-buffer
 ```
+
+**Note**: Lambda Function URLs use the root path `/`, not sub-paths like `/chat`. Get your Function URL from CDK outputs (`StreamingFunctionUrl`).
 
 ---
 

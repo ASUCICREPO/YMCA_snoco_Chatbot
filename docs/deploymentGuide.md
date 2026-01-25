@@ -184,8 +184,7 @@ The `frontend/.env.local` file is **only needed if you want to run the frontend 
 ```bash
 # frontend/.env.local (ONLY for local development)
 
-# Backend API Configuration
-NEXT_PUBLIC_API_ENDPOINT=https://your-api-id.execute-api.region.amazonaws.com/prod/
+# Backend API Configuration (Lambda Function URL with streaming)
 NEXT_PUBLIC_STREAMING_ENDPOINT=https://your-function-url.lambda-url.region.on.aws/
 
 # AWS Configuration

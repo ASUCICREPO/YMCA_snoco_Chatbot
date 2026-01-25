@@ -127,10 +127,9 @@ const {
 
 ## API Integration
 
-### Backend Endpoints
+### Backend Endpoint
 
-1. **POST /chat** - Non-streaming chat endpoint
-2. **Lambda Function URL** - Streaming chat endpoint
+**Lambda Function URL** (root `/`) - Streaming chat endpoint with 15-minute timeout and native RESPONSE_STREAM support
 
 ### Request Format
 

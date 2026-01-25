@@ -275,24 +275,6 @@ export class YmcaAiStack extends cdk.Stack {
       },
     });
 
-    // Lambda function for standard (non-streaming) requests
-    const agentProxyFunction = new lambda.Function(this, 'YmcaAgentProxyFunction', {
-      functionName: 'ymca-agent-proxy',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/agent-proxy'),
-      role: lambdaExecutionRole,
-      timeout: cdk.Duration.minutes(15),
-      memorySize: 1024,
-      environment: {
-        CONVERSATION_TABLE_NAME: conversationTable.tableName,
-        ANALYTICS_TABLE_NAME: analyticsTable.tableName,
-        DOCUMENTS_BUCKET: documentsBucket.bucketName,
-        KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-        REGION: this.region,
-      },
-    });
-
     // Lambda function for streaming requests with response streaming enabled
     const agentProxyStreamingFunction = new lambda.Function(this, 'YmcaAgentProxyStreamingFunction', {
       functionName: 'ymca-agent-proxy-streaming',
