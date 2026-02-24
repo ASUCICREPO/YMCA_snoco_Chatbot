@@ -680,7 +680,7 @@ The documents bucket and Lambda Function URL CORS are restricted to known origin
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'https://main.d22qq7yri8hpql.amplifyapp.com',
+  'https://xxx.xxx.amplifyapp.com',
   'https://your-new-domain.com', // Add here
 ];
 ```
