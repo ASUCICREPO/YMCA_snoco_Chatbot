@@ -1,5 +1,111 @@
 # YMCA Historical Chatbot - Frontend
 
+A Next.js frontend for the YMCA AI Chatbot with real-time streaming responses and AWS Amplify integration.
+
+## Tech Stack
+
+- **Framework**: Next.js with App Router
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS v4
+- **Auth**: AWS Amplify (Cognito User Pool + Identity Pool)
+- **Backend**: AWS Lambda Function URLs with streaming
+
+## Key Files
+
+```
+frontend/
+├── app/
+│   ├── page.tsx              # Landing page with topic cards
+│   ├── chat/page.tsx         # Chat interface
+│   ├── admin/page.tsx        # Admin dashboard (auth required)
+│   ├── context/ChatContext.tsx
+│   └── hooks/useChat.ts
+├── components/
+│   └── ConfigureAmplify.tsx  # Amplify Auth config (includes identityPoolId)
+├── lib/
+│   ├── api-service.ts        # Streaming + non-streaming chat clients
+│   └── i18n.ts               # 12-language support
+└── types/api.ts
+```
+
+## Local Development Setup
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure environment variables
+
+Create `frontend/.env.local` with values from `backend/outputs.json` after deploying the backend:
+
+```env
+NEXT_PUBLIC_STREAMING_ENDPOINT=https://your-function-url.lambda-url.us-west-2.on.aws/
+NEXT_PUBLIC_AWS_REGION=us-west-2
+NEXT_PUBLIC_REGION=us-west-2
+NEXT_PUBLIC_USER_POOL_ID=us-west-2_XXXXXXXXX
+NEXT_PUBLIC_USER_POOL_CLIENT_ID=your-client-id
+NEXT_PUBLIC_IDENTITY_POOL_ID=us-west-2:xxxx-xxxx-xxxx-xxxx
+NEXT_PUBLIC_ANALYTICS_TABLE_NAME=ymca-analytics
+NEXT_PUBLIC_CONVERSATION_TABLE_NAME=ymca-conversations
+NEXT_PUBLIC_DOCUMENTS_BUCKET=ymca-documents-ACCOUNT-REGION
+```
+
+> **Note**: When deployed via Amplify, all env vars are injected automatically by CDK. The `.env.local` file is only needed for local development.
+
+### 3. Run dev server
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## Amplify Auth Configuration
+
+`components/ConfigureAmplify.tsx` configures Amplify with three required values:
+
+```tsx
+Amplify.configure({
+  Auth: {
+    Cognito: {
+      userPoolId: process.env.NEXT_PUBLIC_USER_POOL_ID || "",
+      userPoolClientId: process.env.NEXT_PUBLIC_USER_POOL_CLIENT_ID || "",
+      identityPoolId: process.env.NEXT_PUBLIC_IDENTITY_POOL_ID || "", // Required for admin DynamoDB access
+    },
+  },
+});
+```
+
+The `identityPoolId` is required for the admin dashboard — without it, `fetchAuthSession()` won't return AWS credentials and DynamoDB queries will fail silently.
+
+## Admin Dashboard
+
+The `/admin` route requires Cognito authentication. Self sign-up is disabled on the User Pool — accounts must be created by an AWS administrator. See the [Deployment Guide](../docs/deploymentGuide.md#managing-admin-users).
+
+## Building for Production
+
+```bash
+npm run build
+```
+
+Amplify runs this automatically on every push to `main`.
+
+## Troubleshooting
+
+**Admin page shows no data / "Not authenticated" error**
+- Ensure `NEXT_PUBLIC_IDENTITY_POOL_ID` is set in Amplify env vars
+- Verify `ConfigureAmplify.tsx` includes `identityPoolId`
+
+**Streaming not working**
+- Check `NEXT_PUBLIC_STREAMING_ENDPOINT` points to the Lambda Function URL (not API Gateway)
+- Verify CORS is configured on the Lambda Function URL
+
+**CORS errors on file upload**
+- The documents bucket CORS is restricted to known origins. If your Amplify URL changes, update `allowedOrigins` in `backend/lib/backend-stack.ts` and redeploy.
+
+
 A Next.js 16 frontend application for the YMCA Historical Chatbot with real-time streaming responses and AWS integration.
 
 ## Tech Stack

@@ -148,7 +148,38 @@ The chat page is a Client Component that uses the `useChat` hook.
 </button>
 ```
 
-### Customizing Language Support
+### Configuring Amplify Auth (ConfigureAmplify.tsx)
+
+**Location**: `frontend/components/ConfigureAmplify.tsx`
+
+This component initializes AWS Amplify with Cognito settings. It must include the `identityPoolId` so that authenticated users can obtain temporary AWS credentials for direct DynamoDB access in the admin dashboard.
+
+```tsx
+Amplify.configure({
+  Auth: {
+    Cognito: {
+      userPoolId: process.env.NEXT_PUBLIC_USER_POOL_ID || "",
+      userPoolClientId: process.env.NEXT_PUBLIC_USER_POOL_CLIENT_ID || "",
+      identityPoolId: process.env.NEXT_PUBLIC_IDENTITY_POOL_ID || "", // Required for admin DynamoDB access
+    },
+  },
+});
+```
+
+All three env vars are automatically injected by CDK into Amplify. If running locally, populate `frontend/.env.local` with values from `backend/outputs.json`.
+
+### Managing Cognito Users
+
+Self sign-up is **disabled** on the User Pool (`selfSignUpEnabled: false`). Admin users must be created via AWS CLI or Console. See [Managing Admin Users](./deploymentGuide.md#managing-admin-users) in the Deployment Guide.
+
+To change this behavior in the CDK stack:
+```typescript
+// backend/lib/backend-stack.ts
+const userPool = new cognito.UserPool(this, 'YmcaAdminUserPoolV2', {
+  selfSignUpEnabled: false, // Change to true to allow self-registration
+  // ...
+});
+```
 
 **Location**: `frontend/lib/i18n.ts`
 
@@ -573,6 +604,90 @@ globalSecondaryIndexes: [{
   projectionType: dynamodb.ProjectionType.ALL
 }]
 ```
+
+---
+
+## Security
+
+### CDK Nag
+
+The project uses [CDK Nag](https://github.com/cdklabs/cdk-nag) to enforce AWS security best practices on every `cdk synth`. It's wired up in `backend/bin/backend.ts`:
+
+```typescript
+import { Aspects } from 'aws-cdk-lib';
+import { AwsSolutionsChecks } from 'cdk-nag';
+
+Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
+```
+
+When you add new resources, CDK Nag will flag any violations. Either fix them or add a suppression with a documented reason in `backend-stack.ts`:
+
+```typescript
+import { NagSuppressions } from 'cdk-nag';
+
+// Suppress a specific rule on a specific resource
+NagSuppressions.addResourceSuppressions(myRole, [
+  {
+    id: 'AwsSolutions-IAM5',
+    reason: 'Explain why the wildcard is necessary here.',
+    appliesTo: ['Resource::*'],
+  },
+]);
+
+// Suppress by CDK construct path (for third-party/CDK-managed constructs)
+NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/MyConstruct/Resource', [
+  { id: 'AwsSolutions-L1', reason: 'NODEJS_20_X is current LTS.' },
+]);
+```
+
+Common rules you'll encounter:
+
+| Rule | What it checks |
+|------|---------------|
+| `AwsSolutions-IAM4` | Managed policies (prefer inline) |
+| `AwsSolutions-IAM5` | Wildcard actions/resources in IAM |
+| `AwsSolutions-L1` | Lambda runtime not latest |
+| `AwsSolutions-S1` | S3 bucket missing access logging |
+| `AwsSolutions-COG2` | Cognito MFA not enabled |
+| `AwsSolutions-COG3` | Cognito Advanced Security not enabled |
+| `AwsSolutions-DDB3` | DynamoDB PITR not enabled |
+| `AwsSolutions-SF1/SF2` | Step Functions logging/tracing not enabled |
+| `AwsSolutions-SMG4` | Secrets Manager secret not auto-rotated |
+
+### IAM Least Privilege
+
+When adding new Lambda permissions, always scope to specific resources rather than `*`. The only exceptions (documented in the stack) are AWS services that don't support resource-level ARNs: Textract, Translate, and Comprehend.
+
+```typescript
+// Good - scoped to specific table
+new iam.PolicyStatement({
+  actions: ['dynamodb:GetItem', 'dynamodb:PutItem'],
+  resources: [myTable.tableArn],
+})
+
+// Avoid - only use when AWS service requires it
+new iam.PolicyStatement({
+  actions: ['textract:StartDocumentTextDetection'],
+  resources: ['*'], // Document why this is necessary
+})
+```
+
+### CORS
+
+The documents bucket and Lambda Function URL CORS are restricted to known origins via the `allowedOrigins` array at the top of `backend-stack.ts`. If you add a new frontend domain, update that array and redeploy:
+
+```typescript
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://main.d22qq7yri8hpql.amplifyapp.com',
+  'https://your-new-domain.com', // Add here
+];
+```
+
+### S3 Access Logging
+
+The documents bucket logs to a dedicated `ymca-access-logs-<account>-<region>` bucket. Any new S3 buckets you add should also configure `serverAccessLogsBucket` to satisfy `AwsSolutions-S1`.
 
 ---
 

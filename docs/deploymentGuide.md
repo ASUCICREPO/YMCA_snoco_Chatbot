@@ -289,12 +289,14 @@ If you prefer to deploy manually:
    - Amplify App
 
 6. **Create admin user in Cognito**
+
+   > **Important**: Self sign-up is disabled on the Cognito User Pool. All admin users must be created manually via the AWS CLI or Console. Users cannot register themselves through the application.
+
    ```bash
    # Extract User Pool ID from outputs
    USER_POOL_ID=$(jq -r '.YmcaAiStack.UserPoolId' outputs.json)
-   USER_POOL_CLIENT_ID=$(jq -r '.YmcaAiStack.UserPoolClientId' outputs.json)
 
-   # Create user
+   # Create user (SUPPRESS skips the welcome email)
    aws cognito-idp admin-create-user \
      --user-pool-id "$USER_POOL_ID" \
      --username "admin@example.com" \
@@ -302,7 +304,7 @@ If you prefer to deploy manually:
      --message-action SUPPRESS \
      --region $AWS_REGION
 
-   # Set permanent password
+   # Set a permanent password immediately (avoids forced-reset on first login)
    aws cognito-idp admin-set-user-password \
      --user-pool-id "$USER_POOL_ID" \
      --username "admin@example.com" \
@@ -310,6 +312,8 @@ If you prefer to deploy manually:
      --permanent \
      --region $AWS_REGION
    ```
+
+   To add more admin users later, repeat the two commands above with a different email/password. See [Managing Admin Users](#managing-admin-users) for details.
 
 7. **Wait for Amplify build**
 
@@ -441,13 +445,15 @@ cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_REGION --force
 - Try using Administrator access for initial deployment
 
 #### Issue: Bedrock Model Access
-**Symptoms**: Error invoking Bedrock models
+**Symptoms**: Error invoking Bedrock models (`AccessDeniedException: not authorized to perform: bedrock:InvokeModel`)
 
 **Solution**:
 - Go to AWS Console → Bedrock → Model access
 - Request access to Amazon Nova Pro and Titan Text Embeddings V2
 - Wait for approval (usually instant for standard models)
 - Retry deployment after approval
+
+**Note on cross-region inference**: The `us.amazon.nova-pro-v1:0` inference profile prefix routes requests across `us-east-1`, `us-east-2`, and `us-west-2`. The IAM policy explicitly allows all three regions. If you see a 403 for a region not in this list, add the corresponding `arn:aws:bedrock:<region>::foundation-model/amazon.nova-pro-v1:0` to the `resources` array in `backend/lib/backend-stack.ts` and redeploy.
 
 #### Issue: GitHub Token Invalid
 **Symptoms**: Amplify deployment fails with authentication error
@@ -489,7 +495,67 @@ cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_REGION --force
 
 ---
 
-## Cleanup
+## Managing Admin Users
+
+Self sign-up is **disabled** on the Cognito User Pool — users cannot register themselves through the application. All admin accounts must be created by an AWS administrator.
+
+### Adding a New Admin User
+
+```bash
+# Get your User Pool ID (from CDK outputs or AWS Console)
+USER_POOL_ID=$(aws cloudformation describe-stacks \
+  --stack-name YmcaAiStack \
+  --query 'Stacks[0].Outputs[?OutputKey==`UserPoolId`].OutputValue' \
+  --output text)
+
+# 1. Create the user account
+aws cognito-idp admin-create-user \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "newadmin@example.com" \
+  --user-attributes Name=email,Value="newadmin@example.com" Name=email_verified,Value=true \
+  --message-action SUPPRESS \
+  --region us-west-2
+
+# 2. Set a permanent password (skips the forced-reset flow)
+aws cognito-idp admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "newadmin@example.com" \
+  --password "SecurePassword123!" \
+  --permanent \
+  --region us-west-2
+```
+
+### Removing an Admin User
+
+```bash
+aws cognito-idp admin-delete-user \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "oldadmin@example.com" \
+  --region us-west-2
+```
+
+### Resetting a Password
+
+```bash
+aws cognito-idp admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "admin@example.com" \
+  --password "NewPassword123!" \
+  --permanent \
+  --region us-west-2
+```
+
+### Via AWS Console
+
+1. Go to **AWS Console → Cognito → User Pools → ymca-admin-user-pool-v2**
+2. Click **Users** in the left sidebar
+3. Click **Create user** to add a new admin
+4. Fill in the email, set a temporary or permanent password
+5. To delete: select the user → **Actions → Delete user**
+
+> **Note**: The User Pool enforces a strong password policy: minimum 8 characters, requires uppercase, lowercase, number, and special character.
+
+---
 
 To remove all deployed resources:
 

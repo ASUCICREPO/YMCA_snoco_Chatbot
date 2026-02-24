@@ -1,142 +1,189 @@
 # YMCA AI Backend Infrastructure
 
-This directory contains the AWS CDK infrastructure code for the YMCA AI multilingual chatbot system.
+AWS CDK infrastructure for the YMCA AI multilingual chatbot.
+
+---
 
 ## Architecture Overview
 
-The YMCA AI system is built using a serverless architecture on AWS with the following key components:
+Serverless architecture on AWS:
 
-- **S3 Buckets**: Storage for raw documents, processed documents, and vector embeddings
-- **Lambda Functions**: Serverless compute with Function URLs for document processing and chat functionality
-- **DynamoDB**: NoSQL database for conversation history and analytics
-- **KMS**: Encryption key management for data security
-- **IAM**: Least-privilege access control
+- **S3 Buckets**: Documents (`input/` uploads, `output/processed-text/` Textract output), S3 Vectors (embeddings), Access Logs
+- **Lambda Function URLs**: Streaming chat (`RESPONSE_STREAM`, 15-min timeout), document processing pipeline
+- **Step Functions**: Textract OCR orchestration with X-Ray tracing + CloudWatch logging
+- **Bedrock Knowledge Base**: RAG retrieval backed by S3 Vectors + Titan Embeddings V2
+- **DynamoDB**: `ymca-conversations` and `ymca-analytics` tables
+- **Cognito**: User Pool (self sign-up disabled) + Identity Pool for admin dashboard AWS credentials
+- **Amplify**: Frontend hosting with automatic env var injection from CDK outputs
+
+---
 
 ## Prerequisites
 
-- AWS CLI configured with appropriate credentials
-- Node.js 18+ installed
-- AWS CDK CLI installed (`npm install -g aws-cdk`)
+- AWS CLI configured (`aws configure`)
+- Node.js 18+
+- AWS CDK CLI (`npm install -g aws-cdk`)
+
+---
 
 ## Quick Start
 
-1. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-2. **Build the project**:
-   ```bash
-   npm run build
-   ```
-
-3. **Deploy the infrastructure**:
-   ```bash
-   npm run deploy
-   ```
+```bash
+npm install
+npm run build
+npm run deploy
+```
 
 ## Available Scripts
 
-- `npm run build` - Compile TypeScript to JavaScript
-- `npm run watch` - Watch for changes and recompile
-- `npm run test` - Run unit tests
-- `npm run deploy` - Deploy the CDK stack to AWS
-- `npm run destroy` - Destroy the CDK stack (use with caution)
-- `npm run diff` - Show differences between local and deployed stack
-- `npm run synth` - Synthesize CloudFormation template
-- `npm run bootstrap` - Bootstrap CDK in your AWS account/region
+| Script | Description |
+|--------|-------------|
+| `npm run build` | Compile TypeScript |
+| `npm run watch` | Watch + recompile |
+| `npm run test` | Run unit tests |
+| `npm run deploy` | Deploy CDK stack |
+| `npm run destroy` | Destroy stack (caution) |
+| `npm run diff` | Show pending changes |
+| `npm run synth` | Synthesize CloudFormation template |
+| `npm run bootstrap` | Bootstrap CDK in account/region |
 
-## Stack Components
+---
 
-### S3 Buckets
+## Security
 
-- **Documents Bucket**: Single bucket with `input/` prefix for raw documents and `output/` prefix for processed documents
-- **Vector Store Bucket**: Stores document embeddings and metadata
+### CDK Nag
 
-### Lambda Functions
+[CDK Nag](https://github.com/cdklabs/cdk-nag) (`AwsSolutionsChecks`) runs automatically on every `cdk synth` via `backend/bin/backend.ts`:
 
-- **Agent Proxy**: Main RAG function for handling chat queries
-- **Batch Processor**: Initiates document processing workflows
-- **Textract Async**: Manages OCR job lifecycle
-- **Textract Postprocessor**: Processes OCR results and generates embeddings
+```typescript
+Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
+```
 
-### DynamoDB Tables
+All findings are either fixed or suppressed with documented justifications in `backend-stack.ts`. The suppressed rules and their reasons are:
 
-- **Conversation Table**: Stores chat conversations and user interactions
-- **Analytics Table**: Stores usage metrics and analytics data
+| Rule | Resource | Reason |
+|------|----------|--------|
+| `AwsSolutions-IAM4` | `lambdaExecutionRole`, `batchProcessorRole` | `AWSLambdaBasicExecutionRole` is the minimal policy for Lambda CloudWatch logging |
+| `AwsSolutions-IAM4` | `AmplifyServiceRole` | `AdministratorAccess-Amplify` is the AWS-recommended managed policy for Amplify service roles |
+| `AwsSolutions-IAM4` | CDK-managed constructs (cdk-s3-vectors, BucketNotifications, AwsCustomResource provider) | Internal Lambda functions created by CDK/third-party constructs; cannot be customized |
+| `AwsSolutions-IAM5` | `lambdaExecutionRole` | Bucket object wildcard (`/*`) for documents bucket; Textract/Translate/Comprehend require `resources: ['*']` (AWS limitation); knowledge-base `/*` wildcard (ID only known at runtime) |
+| `AwsSolutions-IAM5` | `batchProcessorRole` | Bucket object wildcard (`/*`) for documents bucket |
+| `AwsSolutions-IAM5` | `knowledgeBaseRole` | S3 Vectors `resources: ['*']` — ARN format not yet documented by AWS; `grantRead()` generates `s3:GetObject*` and `s3:List*` wildcards scoped to documents bucket |
+| `AwsSolutions-IAM5` | `authenticatedRole` | `grantPut()` adds `s3:Abort*` for multipart upload cleanup; scoped to `input/*` prefix only |
+| `AwsSolutions-IAM5` | Step Functions role | CDK `grantInvoke()` appends `:*` to Lambda ARNs to support Lambda versions/aliases |
+| `AwsSolutions-IAM5` | `TriggerAmplifyBuild` custom resource | Amplify job IDs are generated at runtime; wildcard scoped to specific app and branch |
+| `AwsSolutions-IAM5` | cdk-s3-vectors constructs | Third-party construct internals; cannot customize IAM policies |
+| `AwsSolutions-L1` | All application Lambda functions | `NODEJS_20_X` is current LTS; `NODEJS_22_X` not yet LTS-stable for production |
+| `AwsSolutions-L1` | CDK-managed Lambdas (cdk-s3-vectors, BucketNotifications, AwsCustomResource provider) | Third-party/CDK-managed; runtime cannot be customized |
+| `AwsSolutions-SMG4` | GitHub token secret | GitHub PATs cannot be auto-rotated via Secrets Manager; rotated manually on expiry |
+| `AwsSolutions-COG2` | Cognito User Pool | Admin-only pool with strong password policy; MFA planned for future iteration |
+| `AwsSolutions-COG3` | Cognito User Pool | `AdvancedSecurityMode.ENFORCED` requires Cognito PLUS tier (paid); currently on ESSENTIALS |
+| `AwsSolutions-DDB3` | Both DynamoDB tables | PITR will be enabled for production; currently in development |
+| `AwsSolutions-SF1/SF2` | Step Functions | Fixed — ALL-level logging and X-Ray tracing are enabled (not suppressed) |
 
-### Security Features
+### IAM Least Privilege
 
-- **KMS Encryption**: All data encrypted at rest using customer-managed keys
-- **IAM Roles**: Least-privilege access for all services
-- **VPC**: Optional VPC deployment for enhanced security
-- **SSL/TLS**: All data encrypted in transit
+Every role is scoped to the minimum required:
+
+- **Lambda execution role**: S3 (documents bucket only), DynamoDB (two specific tables), Textract (`resources: ['*']` — AWS limitation), Bedrock (specific model ARNs only), Translate/Comprehend (`resources: ['*']` — AWS limitation)
+- **Bedrock Knowledge Base role**: S3 Vectors specific actions, Titan Embed V2 only, documents bucket read only (no `AmazonS3ReadOnlyAccess` managed policy)
+- **Batch processor role**: Separate role with only S3 read + Step Functions `StartExecution`
+- **Cognito authenticated role**: DynamoDB read on both tables, S3 `PutObject` on `input/*` prefix only
+
+### Bedrock IAM — Cross-Region Inference
+
+The `us.amazon.nova-pro-v1:0` inference profile prefix routes requests across all three US regions. The policy explicitly allows all of them:
+
+```
+arn:aws:bedrock:<deploy-region>:<account>:inference-profile/us.amazon.nova-pro-v1:0
+arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0
+arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0
+arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0
+```
+
+`<deploy-region>` is the region the stack is deployed to (e.g. `us-west-2`). The three foundation model ARNs must cover all US regions regardless of deploy region, because the `us.` prefix can route to any of them.
+
+If a new region appears in logs, add `arn:aws:bedrock:<region>::foundation-model/amazon.nova-pro-v1:0` to the resources list in `backend-stack.ts` and redeploy.
+
+### S3 Security
+
+- All buckets: `blockPublicAccess: BLOCK_ALL`, `enforceSSL: true`, `encryption: S3_MANAGED`
+- Documents bucket has a dedicated **access logs bucket** (`ymca-access-logs-<account>-<region>`) with `RETAIN` policy
+- CORS on documents bucket and Lambda Function URL restricted to known origins (`localhost:3000`, `localhost:3001`, Amplify URL) — not `*`
+
+### Cognito
+
+- `selfSignUpEnabled: false` — no public registration; all admin accounts created by AWS admins
+- Strong password policy: min 8 chars, uppercase, lowercase, digit, symbol
+- `accountRecovery: EMAIL_ONLY`
+- `allowUnauthenticatedIdentities: false` on Identity Pool
+
+### Step Functions
+
+- X-Ray tracing enabled (`tracingEnabled: true`)
+- CloudWatch logging at `ALL` level to `/aws/states/ymca-document-processing` (1-month retention)
+
+### Known Gaps (Future Work)
+
+- MFA not yet enabled on Cognito User Pool (planned)
+- DynamoDB PITR not yet enabled (planned for production)
+- Cognito Advanced Security Mode requires PLUS tier upgrade
+
+---
+
+## Managing Admin Users
+
+Self sign-up is disabled. All admin accounts must be created via AWS CLI or Console.
+
+```bash
+USER_POOL_ID=$(jq -r '.YmcaAiStack.UserPoolId' outputs.json)
+
+# Create user
+aws cognito-idp admin-create-user \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "admin@example.com" \
+  --user-attributes Name=email,Value="admin@example.com" Name=email_verified,Value=true \
+  --message-action SUPPRESS
+
+# Set permanent password (skips forced-reset flow)
+aws cognito-idp admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "admin@example.com" \
+  --password "SecurePassword123!" \
+  --permanent
+```
+
+See [Deployment Guide: Managing Admin Users](../docs/deploymentGuide.md#managing-admin-users) for full options.
+
+---
 
 ## Environment Configuration
 
-The stack supports multiple environments through environment variables:
+`backend/.env` (created automatically by `deploy.sh`):
 
-- `NODE_ENV`: Environment name (development, staging, production)
-- `CDK_DEFAULT_ACCOUNT`: AWS account ID
-- `CDK_DEFAULT_REGION`: AWS region (defaults to us-east-1)
+```bash
+AWS_REGION=us-west-2
+ACCOUNT_ID=123456789012
+GITHUB_TOKEN=ghp_xxxx
+GITHUB_OWNER=ASUCICREPO
+GITHUB_REPO=YMCA_snoco_Chatbot
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=YourSecurePassword123!
+```
 
-## Monitoring and Logging
-
-- CloudWatch Logs for all Lambda functions
-- Lambda Function URL access logging
-- DynamoDB point-in-time recovery enabled
-- CloudWatch metrics and alarms (to be configured)
-
-## Cost Optimization
-
-- Pay-per-request billing for DynamoDB
-- Serverless Lambda functions with appropriate memory allocation
-- S3 lifecycle policies for cost-effective storage
-- Lambda concurrency limits to prevent unexpected costs
-
-## Security Best Practices
-
-- All S3 buckets block public access
-- Encryption at rest for all data stores
-- IAM roles follow least-privilege principle
-- SSL enforcement for all data in transit
-- KMS key rotation enabled
-
-## Deployment Environments
-
-The infrastructure supports multiple deployment environments:
-
-- **Development**: Single stack with minimal resources
-- **Staging**: Production-like environment for testing
-- **Production**: Full-scale deployment with enhanced monitoring
+---
 
 ## Troubleshooting
 
-### Common Issues
+1. **CDK Bootstrap Required**: `npm run bootstrap` on first use in a region
+2. **Bedrock 403 on new region**: Add the missing `arn:aws:bedrock:<region>::foundation-model/amazon.nova-pro-v1:0` to the IAM resources list in `backend-stack.ts`
+3. **Amplify build collision on deploy**: CDK triggers an Amplify build; if one is already running the deploy rolls back. Wait for the build to finish and redeploy — the stack will be in `UPDATE_ROLLBACK_COMPLETE` which is a stable, redeployable state
+4. **CDK Nag warnings on synth**: Warnings are expected for suppressed rules. Errors (not warnings) must be fixed before deploying
 
-1. **CDK Bootstrap Required**: Run `npm run bootstrap` if you haven't used CDK in this region
-2. **Permission Denied**: Ensure your AWS credentials have sufficient permissions
-3. **Resource Limits**: Check AWS service limits if deployment fails
-
-### Useful Commands
-
-- View stack outputs: `cdk deploy --outputs-file outputs.json`
-- List all stacks: `cdk list`
-- View synthesized template: `cdk synth > template.yaml`
-
-## Next Steps
-
-After deploying the infrastructure:
-
-1. Implement Lambda function code (Tasks 2-4)
-2. Configure Bedrock Knowledge Base (Task 6)
-3. Set up Step Functions workflow (Task 4)
-4. Deploy frontend application (Task 11)
+---
 
 ## Support
 
-For issues or questions about the infrastructure, please refer to:
-
-- AWS CDK Documentation: https://docs.aws.amazon.com/cdk/
-- YMCA AI Project Documentation: `../docs/`
-- AWS Well-Architected Framework: https://aws.amazon.com/architecture/well-architected/
+- [AWS CDK Docs](https://docs.aws.amazon.com/cdk/)
+- [CDK Nag Rules](https://github.com/cdklabs/cdk-nag/blob/main/RULES.md)
+- [Project Docs](../docs/)

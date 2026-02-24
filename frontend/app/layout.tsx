@@ -25,6 +25,7 @@ const cachet = localFont({
   ],
   variable: '--font-cachet',
   display: 'swap',
+  preload: false, // Prevents unused font variant preload warnings
 });
 
 export const metadata: Metadata = {

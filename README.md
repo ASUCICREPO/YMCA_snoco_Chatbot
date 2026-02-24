@@ -51,7 +51,7 @@ An intelligent document processing and multilingual chatbot system designed for 
 - **Conversation Tracking**: DynamoDB stores all chat interactions and metadata
 - **Usage Analytics**: Track queries, languages, popular topics, and response times
 - **Document Management**: Admin interface for uploading and managing knowledge base content
-- **Cognito Authentication**: Secure admin access with email/password authentication
+- **Cognito Authentication**: Secure admin access — self sign-up disabled, accounts created by AWS admins only
 
 ### Performance & Scalability
 - **S3 Vectors**: Cost-effective vector storage
@@ -193,6 +193,7 @@ The script will:
 ### Admin Features
 
 1. **Login**: Navigate to `/admin` and use your Cognito credentials
+   > Self sign-up is disabled — accounts must be created by an AWS admin. See the [Deployment Guide](./docs/deploymentGuide.md#managing-admin-users) for how to add users via CLI or Console.
 2. **Upload Documents**: Use the admin page upload feature to add PDFs to expand the knowledge base
    - Documents are uploaded to S3 `input/` folder
    - Textract automatically processes and extracts text

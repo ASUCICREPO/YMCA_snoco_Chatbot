@@ -218,10 +218,12 @@ The chatbot maintains conversation context, so you can ask follow-up questions:
 
 ### Accessing the Admin Dashboard
 
+> **Important**: Self sign-up is disabled. Only users created by an AWS administrator can log in. If you don't have credentials, ask your AWS admin to create an account for you — see the [Deployment Guide: Managing Admin Users](./deploymentGuide.md#managing-admin-users).
+
 1. Navigate to `/admin` on your deployed application
 2. **Login**:
-   - Email: Your admin email (set during deployment)
-   - Password: Your admin password (saved in `backend/.env`)
+   - Email: Your admin email (set during deployment or added via AWS CLI/Console)
+   - Password: Your admin password
 3. Click "Sign In"
 
 ### Uploading Documents
@@ -362,9 +364,10 @@ Use the streaming endpoint for faster perceived response time.
 
 ### Issue: Cannot access admin dashboard
 **Solution**:
-- Verify you're using the correct admin email and password (check `backend/.env`)
+- Verify you're using the correct admin email and password
+- Self sign-up is disabled — your account must be created by an AWS admin via CLI or Console (see [Managing Admin Users](./deploymentGuide.md#managing-admin-users))
+- To reset your password: `aws cognito-idp admin-set-user-password --user-pool-id <pool-id> --username <email> --password <new-password> --permanent`
 - Ensure you've completed the deployment and user creation steps
-- Try resetting your password through the Cognito console
 
 ### Issue: Uploaded document not showing in responses
 **Solution**:

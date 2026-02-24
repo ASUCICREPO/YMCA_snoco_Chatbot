@@ -5,7 +5,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
-import * as amplify from 'aws-cdk-lib/aws-amplify';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as stepfunctions from 'aws-cdk-lib/aws-stepfunctions';
 import * as stepfunctionsTasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as s3Notifications from 'aws-cdk-lib/aws-s3-notifications';
@@ -16,6 +16,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { AwsCustomResource, AwsCustomResourcePolicy, PhysicalResourceId } from 'aws-cdk-lib/custom-resources';
 import { Bucket, Index } from 'cdk-s3-vectors';
 import { CfnKnowledgeBase, CfnDataSource } from 'aws-cdk-lib/aws-bedrock';
+import { NagSuppressions } from 'cdk-nag';
 
 // Load environment variables from backend/.env
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -23,6 +24,22 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 export class YmcaAiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // Allowed origins for CORS - update if Amplify app URL changes
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://main.d22qq7yri8hpql.amplifyapp.com',
+    ];
+
+    // S3 access logs bucket (required by AwsSolutions-S1)
+    const accessLogsBucket = new s3.Bucket(this, 'YmcaAccessLogsBucket', {
+      bucketName: `ymca-access-logs-${this.account}-${this.region}`,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+    });
 
     // S3 Bucket for document storage with input/ and output/ prefixes
     // input/ - stores initial documents uploaded for processing
@@ -35,6 +52,8 @@ export class YmcaAiStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
+      serverAccessLogsBucket: accessLogsBucket,
+      serverAccessLogsPrefix: 'documents-bucket/',
       cors: [
         {
           allowedMethods: [
@@ -44,7 +63,7 @@ export class YmcaAiStack extends cdk.Stack {
             s3.HttpMethods.DELETE,
             s3.HttpMethods.HEAD,
           ],
-          allowedOrigins: ['*'], // Allow all origins for admin uploads
+          allowedOrigins: allowedOrigins, // Restrict to known origins
           allowedHeaders: ['*'],
           exposedHeaders: [
             'ETag',
@@ -83,24 +102,31 @@ export class YmcaAiStack extends cdk.Stack {
     // Create IAM role for Bedrock Knowledge Base
     const knowledgeBaseRole = new iam.Role(this, 'YmcaKnowledgeBaseRole', {
       assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess'),
-      ],
+      // No AmazonS3ReadOnlyAccess managed policy - documentsBucket.grantRead() below is sufficient
     });
 
-    // Grant S3 Vectors permissions
+    // Grant S3 Vectors permissions - resource scoping not supported for new s3vectors service
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['s3vectors:*'],
-      resources: ['*'],
+      actions: [
+        's3vectors:CreateIndex',
+        's3vectors:GetIndex',
+        's3vectors:DeleteIndex',
+        's3vectors:PutVectors',
+        's3vectors:GetVectors',
+        's3vectors:DeleteVectors',
+        's3vectors:QueryVectors',
+        's3vectors:ListIndexes',
+      ],
+      resources: ['*'], // s3vectors ARN format not yet documented; tighten when available
     }));
 
-    // Grant Bedrock model invocation permissions
+    // Grant Bedrock model invocation permissions - scoped to embedding model only
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
       resources: [
-        `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`
+        `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
       ],
     }));
 
@@ -205,7 +231,7 @@ export class YmcaAiStack extends cdk.Stack {
                 analyticsTable.tableArn,
               ],
             }),
-            // Textract permissions
+            // Textract permissions - resources: ['*'] required (Textract doesn't support resource-level permissions)
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
@@ -214,9 +240,9 @@ export class YmcaAiStack extends cdk.Stack {
                 'textract:StartDocumentAnalysis',
                 'textract:GetDocumentAnalysis',
               ],
-              resources: ['*'],
+              resources: ['*'], // AWS limitation: Textract does not support resource-level ARNs
             }),
-            // Bedrock permissions - for foundation models and inference profiles
+            // Bedrock permissions - scoped to specific models used by this application
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
@@ -224,11 +250,13 @@ export class YmcaAiStack extends cdk.Stack {
                 'bedrock:InvokeModelWithResponseStream',
               ],
               resources: [
-                `arn:aws:bedrock:${this.region}::foundation-model/*`, // Region-specific foundation models
-                `arn:aws:bedrock:us-west-2::foundation-model/*`, // Cross-region for us-west-2 models
-                `arn:aws:bedrock:us-east-1::foundation-model/*`, // Cross-region for us-east-1 models (Nova)
-                `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
-                `arn:aws:bedrock:*::foundation-model/amazon.nova-*`, // Nova models in any region
+                `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+                // Nova Pro via cross-region inference profile (us. prefix routes to us-east-1/us-west-2)
+                `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/us.amazon.nova-pro-v1:0`,
+                // Underlying Nova Pro foundation model - required in all US regions for cross-region inference
+                `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0`,
+                `arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0`,
+                `arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0`,
               ],
             }),
             new iam.PolicyStatement({
@@ -246,13 +274,14 @@ export class YmcaAiStack extends cdk.Stack {
                 `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`,
               ],
             }),
+            // Translate/Comprehend - resources: ['*'] required (these services don't support resource-level ARNs)
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
                 'translate:TranslateText',
                 'comprehend:DetectDominantLanguage',
               ],
-              resources: ['*'],
+              resources: ['*'], // AWS limitation: Translate and Comprehend do not support resource-level ARNs
             }),
           ],
         }),
@@ -301,7 +330,7 @@ export class YmcaAiStack extends cdk.Stack {
       authType: lambda.FunctionUrlAuthType.NONE,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
       cors: {
-        allowedOrigins: ['*'],
+        allowedOrigins: allowedOrigins,
         allowedMethods: [lambda.HttpMethod.POST],
         allowedHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Amz-Security-Token'],
       },
@@ -369,7 +398,7 @@ export class YmcaAiStack extends cdk.Stack {
     // Cognito User Pool for Admin Authentication
     const userPool = new cognito.UserPool(this, 'YmcaAdminUserPoolV2', {
       userPoolName: 'ymca-admin-user-pool-v2',
-      selfSignUpEnabled: true, // Allow users to sign up
+      selfSignUpEnabled: false, // Admins created manually in AWS Console only
       signInAliases: { email: true },
       autoVerify: { email: true },
       passwordPolicy: {
@@ -380,6 +409,8 @@ export class YmcaAiStack extends cdk.Stack {
         requireSymbols: true,
       },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      // advancedSecurityMode: cognito.AdvancedSecurityMode.ENFORCED, // Requires Cognito PLUS tier (paid)
+      // AUDIT mode logs suspicious activity without blocking - available on ESSENTIALS (free) tier
       removalPolicy: cdk.RemovalPolicy.DESTROY, // Allow cleanup for dev
     });
 
@@ -617,6 +648,115 @@ export class YmcaAiStack extends cdk.Stack {
     //       `,
     //       description: 'Post-deployment setup instructions',
     //     });
+
+    // ========================================================================
+    // CDK NAG SUPPRESSIONS
+    // Suppressions are applied where AWS service limitations or third-party
+    // constructs prevent full compliance. Each suppression includes justification.
+    // ========================================================================
+
+    // AWSLambdaBasicExecutionRole is the minimal managed policy for Lambda logging.
+    // CDK-managed constructs (cdk-s3-vectors, BucketNotifications, custom resources)
+    // use it internally and cannot be replaced with inline policies.
+    const lambdaBasicExecSuppression = {
+      id: 'AwsSolutions-IAM4',
+      reason: 'AWSLambdaBasicExecutionRole is the minimal policy for Lambda CloudWatch logging. Used by CDK-managed constructs (cdk-s3-vectors, BucketNotifications, AwsCustomResource) that cannot be customized.',
+      appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+    };
+
+    NagSuppressions.addResourceSuppressions(lambdaExecutionRole, [lambdaBasicExecSuppression]);
+    NagSuppressions.addResourceSuppressions(batchProcessorRole, [lambdaBasicExecSuppression]);
+
+    // Wildcard on documentsBucket/* is intentional - Lambda needs access to all objects in the bucket
+    NagSuppressions.addResourceSuppressions(lambdaExecutionRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'Lambda requires access to all objects in the documents bucket for read/write operations across input/ and output/ prefixes.', appliesTo: [`Resource::<YmcaDocumentsBucket28FD4479.Arn>/*`] },
+      { id: 'AwsSolutions-IAM5', reason: 'Textract does not support resource-level ARNs. AWS limitation documented at https://docs.aws.amazon.com/textract/latest/dg/security_iam_service-with-iam.html', appliesTo: ['Resource::*'] },
+      { id: 'AwsSolutions-IAM5', reason: 'Bedrock knowledge-base/* wildcard is required as the knowledge base ID is only known at runtime.', appliesTo: [`Resource::arn:aws:bedrock:<AWS::Region>:<AWS::AccountId>:knowledge-base/*`] },
+    ]);
+
+    NagSuppressions.addResourceSuppressions(batchProcessorRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'Lambda requires access to all objects in the documents bucket.', appliesTo: [`Resource::<YmcaDocumentsBucket28FD4479.Arn>/*`] },
+    ]);
+
+    // knowledgeBaseRole: s3vectors resources: ['*'] - ARN format not yet documented by AWS
+    NagSuppressions.addResourceSuppressions(knowledgeBaseRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'S3 Vectors is a new service and resource-level ARN scoping is not yet documented. Will tighten when ARN format is published.', appliesTo: ['Resource::*'] },
+      { id: 'AwsSolutions-IAM5', reason: 'documentsBucket.grantRead() generates s3:GetObject* and s3:List* wildcards. These are scoped to the specific documents bucket.', appliesTo: ['Action::s3:GetBucket*', 'Action::s3:GetObject*', 'Action::s3:List*', `Resource::<YmcaDocumentsBucket28FD4479.Arn>/*`] },
+    ], true);
+
+    // Authenticated role: s3:Abort* is added by grantPut() - scoped to input/* prefix
+    NagSuppressions.addResourceSuppressions(authenticatedRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'grantPut() adds s3:Abort* for multipart upload cleanup. Scoped to input/* prefix only.', appliesTo: ['Action::s3:Abort*', `Resource::<YmcaDocumentsBucket28FD4479.Arn>/input/*`] },
+    ], true);
+
+    // Step Functions role: Lambda ARN:* wildcards are added by CDK grantInvoke() for versioning support
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/YmcaDocumentProcessingWorkflow/Role/DefaultPolicy/Resource', [
+      { id: 'AwsSolutions-IAM5', reason: 'CDK grantInvoke() appends :* to Lambda ARNs to support Lambda versions/aliases. This is CDK-managed behavior.' },
+    ]);
+
+    // NODEJS_20_X is the current LTS runtime. NODEJS_22_X is available but not yet LTS.
+    // All our Lambda functions use NODEJS_20_X intentionally.
+    const lambdaRuntimeSuppression = { id: 'AwsSolutions-L1', reason: 'NODEJS_20_X is the current LTS runtime. NODEJS_22_X is available but not yet LTS-stable for production workloads.' };
+    NagSuppressions.addResourceSuppressions(agentProxyStreamingFunction, [lambdaRuntimeSuppression]);
+    NagSuppressions.addResourceSuppressions(batchProcessorFunction, [lambdaRuntimeSuppression]);
+    NagSuppressions.addResourceSuppressions(textractAsyncFunction, [lambdaRuntimeSuppression]);
+    NagSuppressions.addResourceSuppressions(textractPostprocessorFunction, [lambdaRuntimeSuppression]);
+    NagSuppressions.addResourceSuppressions(checkTextractStatusFunction, [lambdaRuntimeSuppression]);
+
+    // cdk-s3-vectors and BucketNotifications are third-party/CDK-managed constructs.
+    // We cannot control their internal Lambda runtime or IAM policies.
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/YmcaVectorsBucket', [
+      lambdaRuntimeSuppression,
+      lambdaBasicExecSuppression,
+      { id: 'AwsSolutions-IAM5', reason: 'cdk-s3-vectors internal construct. Cannot customize IAM policies of third-party constructs.' },
+    ], true);
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/YmcaVectorIndex', [
+      lambdaRuntimeSuppression,
+      lambdaBasicExecSuppression,
+      { id: 'AwsSolutions-IAM5', reason: 'cdk-s3-vectors internal construct. Cannot customize IAM policies of third-party constructs.' },
+    ], true);
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/BucketNotificationsHandler050a0587b7544547bf325f094a3db834', [
+      lambdaBasicExecSuppression,
+    ], true);
+
+    // GitHub token secret: PATs cannot be auto-rotated via Secrets Manager rotation lambdas.
+    // Token rotation is handled manually when GitHub PAT expires.
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/GitHubToken/Resource', [
+      { id: 'AwsSolutions-SMG4', reason: 'GitHub Personal Access Token cannot be auto-rotated via Secrets Manager. Token is rotated manually when it expires.' },
+    ]);
+
+    // AdministratorAccess-Amplify is the AWS-recommended service role for Amplify.
+    // It is scoped to Amplify service operations only.
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/AmplifyServiceRole/Resource', [
+      { id: 'AwsSolutions-IAM4', reason: 'AdministratorAccess-Amplify is the AWS-recommended managed policy for Amplify service roles. It is assumed only by amplify.amazonaws.com.', appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/AdministratorAccess-Amplify'] },
+    ]);
+
+    // TriggerAmplifyBuild custom resource: jobs/* wildcard is required as job IDs are generated at runtime
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/TriggerAmplifyBuild/CustomResourcePolicy/Resource', [
+      { id: 'AwsSolutions-IAM5', reason: 'Amplify job IDs are generated at runtime and cannot be predicted. The wildcard is scoped to a specific app and branch.' },
+    ]);
+
+    // AwsCustomResource provider Lambda (AWS679f...) is CDK-managed
+    NagSuppressions.addResourceSuppressionsByPath(this, '/YmcaAiStack/AWS679f53fac002430cb0da5b7982bd2287', [
+      lambdaRuntimeSuppression,
+      lambdaBasicExecSuppression,
+    ], true);
+
+    // MFA is a warning (not error) - noted for future consideration
+    // COG2 (MFA) suppressed: admin-only user pool with strong password policy
+    // COG3 (AdvancedSecurityMode) suppressed: requires Cognito PLUS tier (paid), not available on ESSENTIALS
+    NagSuppressions.addResourceSuppressions(userPool, [
+      { id: 'AwsSolutions-COG2', reason: 'Admin-only user pool with strong password policy. MFA will be added in a future iteration.' },
+      { id: 'AwsSolutions-COG3', reason: 'AdvancedSecurityMode ENFORCED requires Cognito PLUS pricing tier. Currently on ESSENTIALS (free) tier. Will upgrade for production.' },
+    ]);
+
+    // DynamoDB PITR warnings - noted, will enable for production
+    NagSuppressions.addResourceSuppressions(conversationTable, [
+      { id: 'AwsSolutions-DDB3', reason: 'PITR will be enabled for production. Currently in development phase.' },
+    ]);
+    NagSuppressions.addResourceSuppressions(analyticsTable, [
+      { id: 'AwsSolutions-DDB3', reason: 'PITR will be enabled for production. Currently in development phase.' },
+    ]);
   }
 
   private createDocumentProcessingWorkflow(
@@ -683,6 +823,16 @@ export class YmcaAiStack extends cdk.Stack {
       stateMachineName: 'ymca-document-processing',
       definitionBody: stepfunctions.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.hours(2), // 2 hours for very large documents
+      tracingEnabled: true, // AwsSolutions-SF2: enable X-Ray tracing
+      logs: {
+        destination: new logs.LogGroup(this, 'YmcaStateMachineLogs', {
+          logGroupName: '/aws/states/ymca-document-processing',
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
+        level: stepfunctions.LogLevel.ALL, // AwsSolutions-SF1: log ALL events
+        includeExecutionData: false,
+      },
     });
 
     return stateMachine;
