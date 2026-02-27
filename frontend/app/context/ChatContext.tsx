@@ -101,6 +101,7 @@ export const ChatProvider = ({ children }: ChatProviderProps) => {
               response: {
                 ...content.response,
                 story: {
+                  title: content.response?.story?.title || '',
                   ...content.response?.story,
                   narrative: existingNarrative,
                 },
