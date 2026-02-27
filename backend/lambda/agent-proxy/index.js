@@ -285,6 +285,18 @@ async function generateAIResponse(retrievedContext, queryInEnglish, citations, s
   // Parse response
   try {
     const jsonResponse = JSON.parse(generatedText);
+    
+    // Check if the AI returned a simple response (non-YMCA or general query)
+    if (jsonResponse.simpleResponse) {
+      return {
+        type: 'simple',
+        content: {
+          simpleResponse: jsonResponse.simpleResponse
+        },
+        rawText: jsonResponse.simpleResponse
+      };
+    }
+    
     return {
       type: 'structured',
       content: jsonResponse,
@@ -325,6 +337,24 @@ async function translateResponse(ragResponse, originalLanguage) {
   }
 
   try {
+    // Handle simple responses (non-YMCA or general queries)
+    if (ragResponse.type === 'simple') {
+      const text = ragResponse.content?.simpleResponse || '';
+      if (text && originalLanguage !== 'en') {
+        const translateCmd = new TranslateTextCommand({
+          Text: text,
+          SourceLanguageCode: 'en',
+          TargetLanguageCode: originalLanguage
+        });
+        const result = await translateClient.send(translateCmd);
+        return {
+          ...ragResponse,
+          content: { simpleResponse: result.TranslatedText }
+        };
+      }
+      return ragResponse;
+    }
+
     if (ragResponse.type === 'structured' || ragResponse.type === 'narrative') {
       const content = ragResponse.content;
 
@@ -642,61 +672,24 @@ async function processRequest(event, streamWriter = null) {
   // Step 1: Translate query to English
   const { queryInEnglish, originalLanguage } = await translateToEnglish(message, language);
 
-  // Step 2: Pre-filter check - is this query about YMCA?
-  const isYMCARelated = await checkIfYMCARelated(queryInEnglish);
-
+  // Step 2: Start categorization (async, non-blocking)
+  let categorizationPromise = categorizeQuery(queryInEnglish);
   let ragResponse;
   let citations = [];
-  let categorizationPromise;
 
-  if (!isYMCARelated) {
-    console.log('Query rejected as unrelated to YMCA:', queryInEnglish);
+  try {
+    // Step 3: Retrieve context from Knowledge Base
+    const { citations: retrievedCitations, retrievedContext } = await retrieveKnowledgeBaseContext(queryInEnglish);
+    citations = retrievedCitations;
 
-    // Return rejection response immediately
-    const rejectionMessage = "I appreciate your question, but I'm specifically designed to help you explore YMCA history, programs, and community impact. I can't provide information about topics outside of the YMCA organization.\n\nI'd love to help you discover fascinating aspects of YMCA history instead! Try asking about:\n\n• How did the YMCA get started and who were its founders?\n• What role did the YMCA play during World War I and World War II?\n• How have YMCA youth programs evolved over the decades?\n\nWhat aspect of YMCA history interests you?";
+    // Step 4: Generate AI response (the prompt handles YMCA vs non-YMCA naturally)
+    ragResponse = await generateAIResponse(retrievedContext, queryInEnglish, citations, streamWriter);
 
-    ragResponse = {
-      type: 'narrative',
-      content: {
-        story: {
-          title: "I'm Here to Help with YMCA History",
-          narrative: rejectionMessage,
-          timeline: "N/A",
-          locations: "N/A",
-          keyPeople: "N/A",
-          whyItMatters: "Understanding YMCA's rich history helps us appreciate its lasting community impact."
-        },
-        lessonsAndThemes: ["I specialize in YMCA history and cannot address unrelated topics"],
-        modernReflection: "I'm here to help you explore the fascinating history of the YMCA organization.",
-        exploreFurther: [
-          "How did the YMCA get started?",
-          "Tell me about YMCA programs during a specific time period",
-          "What role did the YMCA play in community development?"
-        ]
-      },
-      rawText: rejectionMessage
-    };
-
-    citations = [];
-    categorizationPromise = Promise.resolve('Unrelated Query');
-  } else {
-    // Step 3: Start categorization (async, non-blocking)
-    categorizationPromise = categorizeQuery(queryInEnglish);
-
-    try {
-      // Step 4: Retrieve context from Knowledge Base
-      const { citations: retrievedCitations, retrievedContext } = await retrieveKnowledgeBaseContext(queryInEnglish);
-      citations = retrievedCitations;
-
-      // Step 5: Generate AI response
-      ragResponse = await generateAIResponse(retrievedContext, queryInEnglish, citations, streamWriter);
-
-      console.log('RAG response generated successfully');
-      console.log('Citations processed:', citations.length);
-    } catch (error) {
-      console.error('RAG query failed:', error);
-      ragResponse = createErrorResponse();
-    }
+    console.log('RAG response generated successfully');
+    console.log('Citations processed:', citations.length);
+  } catch (error) {
+    console.error('RAG query failed:', error);
+    ragResponse = createErrorResponse();
   }
 
   const ragEndTime = Date.now();
@@ -857,7 +850,21 @@ ${retrievedContext}
 
 USER QUESTION: ${queryInEnglish}
 
-IMPORTANT: You must ONLY answer questions about YMCA. If the question is not about YMCA (e.g., how bulbs work, Indian economy, cooking recipes, etc.), do NOT make up YMCA connections. Instead, respond with: "I appreciate your question, but I'm specifically designed to help you explore YMCA history, programs, and community impact. I can't provide information about topics outside of the YMCA organization."
+IMPORTANT: You are a YMCA-focused chatbot. Your expertise is YMCA history, programs, and community impact.
+
+HANDLING NON-YMCA OR GENERAL QUERIES:
+If the user asks something that is NOT about YMCA (e.g., how bulbs work, Indian economy, cooking recipes), OR if the user asks a general/meta question about you (e.g., "What can you do?", "Who are you?", "Help", "Hello"), do NOT use the structured story format. Instead, respond with this simpler JSON format:
+
+{
+  "simpleResponse": "Your friendly, conversational reply here. Introduce yourself, explain what you can help with, and suggest some YMCA topics the user could explore."
+}
+
+For example, if someone asks "What can you do?", respond naturally like:
+{
+  "simpleResponse": "I'm a chatbot designed to help you explore the YMCA's rich history, programs, and community impact. I can tell you about how the YMCA was founded, its role during major historical events, youth programs, community initiatives, and much more. Try asking me something like 'How did the YMCA get started?' or 'What role did the YMCA play during World War II?'"
+}
+
+Only use the full structured story format below for actual YMCA-related questions where you have archival sources to draw from.
 
 CRITICAL REQUIREMENTS FOR SOURCE SYNTHESIS:
 1. **MANDATORY MULTI-SOURCE USAGE**: You have ${numSources} sources available. You MUST reference and synthesize information from AT LEAST ${Math.min(3, numSources)} different sources in your response.

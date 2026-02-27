@@ -169,6 +169,19 @@ const MessageBubble = ({ message, onSuggestionClick }: MessageBubbleProps) => {
     );
   }
 
+  // Simple response (non-YMCA or general queries like "What can you do?")
+  if (response.responseType === 'simple' || response.response?.simpleResponse) {
+    return (
+      <div className="bg-white border border-[#d1d5dc] border-solid content-stretch flex flex-col items-start overflow-hidden relative rounded-[12px] shrink-0 w-full max-w-[976px]">
+        <div className="content-stretch flex flex-col gap-[24px] items-start p-[40px] relative shrink-0 w-full break-words overflow-wrap-anywhere">
+          <div className={cn("font-normal leading-[28px] not-italic relative shrink-0 text-[#231f20] text-[18px] w-full prose prose-lg max-w-none")}>
+            <ReactMarkdown>{response.response?.simpleResponse || response.rawResponse || ''}</ReactMarkdown>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Structured response
   if (response.response) {
     const { story, lessonsAndThemes, modernReflection, exploreFurther } = response.response;

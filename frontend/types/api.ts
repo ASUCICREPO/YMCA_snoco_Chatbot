@@ -15,12 +15,13 @@ export interface StoryResponse {
 // Full API response structure
 export interface ChatResponse {
   response: {
-    story: StoryResponse;
+    story?: StoryResponse;
+    simpleResponse?: string;
     lessonsAndThemes?: string[];
     modernReflection?: string;
     exploreFurther?: string[];
   };
-  responseType: 'structured' | 'narrative' | 'error' | 'streaming';
+  responseType: 'structured' | 'narrative' | 'error' | 'streaming' | 'simple';
   rawResponse?: string;
   sources?: Source[];
   conversationId: string;
