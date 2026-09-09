@@ -108,9 +108,7 @@
         "-y",
         "@modelcontextprotocol/server-github"
       ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "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"
-      },
+      "env": { },
       "disabled": false,
       "autoApprove": [
         "get_file_contents"
@@ -120,9 +118,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@upstash/context7-mcp",
-        "--api-key",
-        "ctx7sk-32edcd53-d555-4034-a59e-cb15a8f92008"
+        "@upstash/context7-mcp"
       ],
       "env": {},
       "disabled": false,
